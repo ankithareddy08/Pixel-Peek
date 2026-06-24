@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Pixelpeek — Device</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/client.css" />
+</head>
+<body>
+  <div id="share-banner" hidden role="dialog" aria-label="screen share request">
+    <span class="share-banner-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+        <line x1="8" y1="21" x2="16" y2="21"></line>
+        <line x1="12" y1="17" x2="12" y2="21"></line>
+      </svg>
+    </span>
+    <span id="share-message">Host wants to view your screen</span>
+    <div class="share-banner-actions">
+      <button id="share-deny" type="button">Deny</button>
+      <button id="share-allow" type="button">Allow</button>
+    </div>
+  </div>
+
+  <button id="gear-btn" type="button" title="settings" aria-label="open settings">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+    <span id="gear-dot" class="dot disconnected" aria-hidden="true"></span>
+  </button>
+
+  <div id="control-panel" aria-hidden="true" role="dialog" aria-label="device settings">
+    <div class="panel-head">
+      <div class="panel-title">
+        <span class="panel-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"></rect></svg>
+        </span>
+        <span>Device settings</span>
+      </div>
+      <span id="conn-state" class="badge disconnected">
+        <span class="badge-dot"></span>disconnected
+      </span>
+      <button id="close-panel" type="button" title="close" aria-label="close settings">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+
+    <div class="panel-section">
+      <label class="panel-label">Viewport</label>
+      <div class="viewport-controls">
+        <input id="w-input" type="number" min="100" max="9999" step="1" title="width" />
+        <span class="x">×</span>
+        <input id="h-input" type="number" min="100" max="9999" step="1" title="height" />
+        <button id="apply-btn" type="button">Apply</button>
+        <button id="fit-btn" type="button" title="match window">Fit</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <label class="panel-label">Preset</label>
+      <select id="preset-select" title="device presets">
+        <option value="">Choose a preset…</option>
+        <option value="375,667">iPhone SE — 375×667</option>
+        <option value="390,844">iPhone 14 — 390×844</option>
+        <option value="430,932">iPhone 14 Pro Max — 430×932</option>
+        <option value="412,915">Pixel 7 — 412×915</option>
+        <option value="360,800">Android (small) — 360×800</option>
+        <option value="768,1024">iPad — 768×1024</option>
+        <option value="1024,1366">iPad Pro — 1024×1366</option>
+        <option value="1280,800">Laptop — 1280×800</option>
+        <option value="1440,900">Desktop — 1440×900</option>
+        <option value="1920,1080">Full HD — 1920×1080</option>
+      </select>
+    </div>
+
+    <div class="panel-section">
+      <label class="panel-label">Label</label>
+      <div class="panel-row">
+        <input id="label-input" type="text" placeholder="My device name" />
+        <button id="rename-btn" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="frame-wrap">
+    <iframe id="frame" src="about:blank" allow="fullscreen; clipboard-read; clipboard-write"></iframe>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>

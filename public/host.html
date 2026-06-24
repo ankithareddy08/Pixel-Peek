@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Pixelpeek — Orchestrator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/host.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+            <circle cx="12" cy="10" r="2.5"></circle>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">Pixelpeek</span>
+          <span class="brand-tag">Responsive QA</span>
+        </div>
+      </div>
+
+      <nav class="side-nav" aria-label="primary">
+        <a class="nav-item active" href="#dashboard">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
+          <span>Dashboard</span>
+        </a>
+        <a class="nav-item" href="#devices">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"></rect><line x1="12" y1="18" x2="12" y2="18"></line></svg>
+          <span>Devices</span>
+        </a>
+        <a class="nav-item" href="#gallery">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+          <span>Gallery</span>
+        </a>
+        <a class="nav-item" href="#activity">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          <span>Activity</span>
+        </a>
+      </nav>
+
+      <div class="side-footer">
+        <div class="connect-hint">
+          <p class="hint-title">Add a device</p>
+          <p class="hint-body">Open <code>/client</code> on any device on this network.</p>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-sub">Push URLs, capture screenshots, and audit layouts across every connected device.</p>
+        </div>
+        <div class="topbar-right">
+          <span id="connection-status" class="status disconnected">
+            <span class="status-dot"></span>
+            <span class="status-text">disconnected</span>
+          </span>
+        </div>
+      </header>
+
+      <div id="share-banner" class="share-active-banner" hidden>
+        <span class="share-banner-dot"></span>
+        <span class="share-banner-text">Live: <strong id="share-banner-label"></strong></span>
+        <button id="share-banner-view" type="button" class="btn btn-ghost btn-sm">View stream</button>
+        <button id="share-banner-stop" type="button" class="btn btn-danger btn-sm">Stop sharing</button>
+      </div>
+
+      <section class="stats" aria-label="overview">
+        <article class="stat-card">
+          <div class="stat-icon stat-icon-indigo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"></rect></svg>
+          </div>
+          <div class="stat-body">
+            <span class="stat-label">Connected devices</span>
+            <span class="stat-value" id="stat-devices">0</span>
+          </div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-icon stat-icon-emerald" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+          </div>
+          <div class="stat-body">
+            <span class="stat-label">Screenshots</span>
+            <span class="stat-value" id="stat-shots">0</span>
+          </div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-icon stat-icon-amber" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+          </div>
+          <div class="stat-body">
+            <span class="stat-label">Last capture</span>
+            <span class="stat-value" id="stat-last">—</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="card command-card" id="dashboard">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">Push a URL</h2>
+            <p class="card-sub">Send a page to one device or every connected device at once.</p>
+          </div>
+        </div>
+        <form id="url-form" class="command-form">
+          <div class="field field-url">
+            <svg class="field-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+            <input id="url-input" type="text" placeholder="https://example.com" autocomplete="off" required />
+          </div>
+          <div class="field field-select">
+            <svg class="field-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"></rect></svg>
+            <select id="target-select">
+              <option value="">All connected devices</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            <span>Push URL</span>
+          </button>
+        </form>
+      </section>
+
+      <section class="card capture-card">
+        <div class="capture-text">
+          <h2 class="card-title">Capture every device</h2>
+          <p class="card-sub">Take a synchronized screenshot across all connected devices.</p>
+          <span id="capture-status"></span>
+        </div>
+        <button id="capture-btn" type="button" class="btn btn-success">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+          <span>Capture now</span>
+        </button>
+      </section>
+
+      <section class="section" id="devices">
+        <div class="section-head">
+          <h2 class="section-title">Connected devices <span id="device-count" class="count-pill">0</span></h2>
+        </div>
+        <div id="device-list" class="device-grid">
+          <div class="empty-state">
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"></rect><line x1="12" y1="18" x2="12" y2="18"></line></svg>
+            </div>
+            <p class="empty-title">No devices connected yet</p>
+            <p class="empty-body">Open <code>/client</code> on a device on the same network to get started.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="gallery-section">
+        <div class="section-head">
+          <h2 class="section-title">Gallery <span id="screenshot-count" class="count-pill">0</span></h2>
+          <button id="clear-gallery-btn" type="button" class="btn btn-ghost btn-sm">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg>
+            <span>Clear</span>
+          </button>
+        </div>
+        <div id="gallery" class="gallery-grid">
+          <div class="empty-state">
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+            </div>
+            <p class="empty-title">No screenshots yet</p>
+            <p class="empty-body">Push a URL, then hit <strong>Capture now</strong> to fill the gallery.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="activity">
+        <div class="section-head">
+          <h2 class="section-title">Activity</h2>
+        </div>
+        <ul id="log" class="log"></ul>
+      </section>
+    </main>
+  </div>
+
+  <div id="share-modal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="share-dialog">
+      <header class="share-head">
+        <strong id="share-title">Device</strong>
+        <span id="share-meta" class="share-meta"></span>
+        <span id="share-status"></span>
+        <button id="share-start-btn" type="button" class="btn btn-primary btn-sm">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+          <span>Share screen</span>
+        </button>
+        <button id="share-stop-btn" type="button" class="btn btn-danger btn-sm share-stop-inline" hidden>Stop sharing</button>
+        <button id="share-close" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </header>
+      <div class="device-detail-body">
+        <div class="share-stage">
+          <img id="share-image" alt="" />
+          <div id="share-placeholder">No live preview yet — click <strong>Share screen</strong> to start streaming.</div>
+        </div>
+        <aside class="logs-panel">
+          <header class="logs-head">
+            <strong>Web console</strong>
+            <div class="logs-actions">
+              <button id="logs-clear" type="button" class="btn btn-ghost btn-sm">Clear</button>
+            </div>
+          </header>
+          <div id="logs-list" class="logs-list" role="log" aria-live="polite">
+            <div class="logs-empty">Console messages from the page running on this device will appear here.</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/host.js"></script>
+</body>
+</html>
