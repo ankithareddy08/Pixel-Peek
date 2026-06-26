@@ -11,8 +11,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.flashbacklabs.pixelpeek.capture.ScreenCaptureService
 import com.flashbacklabs.pixelpeek.capture.ScreenStreamer
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -41,6 +44,9 @@ class PixelpeekViewModel(app: Application) : AndroidViewModel(app) {
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
+    private val _controlCommands = MutableSharedFlow<ControlCommand>(extraBufferCapacity = 64)
+    val controlCommands: SharedFlow<ControlCommand> = _controlCommands.asSharedFlow()
+
     private var streamer: ScreenStreamer? = null
     private var pendingResultCode: Int = 0
     private var pendingPermissionData: Intent? = null
@@ -68,6 +74,7 @@ class PixelpeekViewModel(app: Application) : AndroidViewModel(app) {
                     is SocketEvent.LoadUrl -> _ui.value = _ui.value.copy(currentUrl = event.url)
                     is SocketEvent.ShareRequest -> handleShareRequest(event.fromId)
                     is SocketEvent.ShareStop -> stopShare()
+                    is SocketEvent.Control -> _controlCommands.tryEmit(event.command)
                 }
             }
         }

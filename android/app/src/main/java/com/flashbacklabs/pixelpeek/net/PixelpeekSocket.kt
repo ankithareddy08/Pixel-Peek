@@ -27,6 +27,13 @@ sealed class SocketEvent {
     data class LoadUrl(val url: String) : SocketEvent()
     data class ShareRequest(val fromId: String) : SocketEvent()
     data class ShareStop(val fromId: String) : SocketEvent()
+    data class Control(val command: ControlCommand) : SocketEvent()
+}
+
+sealed class ControlCommand {
+    data class Scroll(val deltaX: Int, val deltaY: Int) : ControlCommand()
+    data class ScrollTo(val x: Int, val y: Int) : ControlCommand()
+    data class Click(val xPct: Float, val yPct: Float) : ControlCommand()
 }
 
 class PixelpeekSocket {
@@ -55,6 +62,27 @@ class PixelpeekSocket {
         _events.tryEmit(SocketEvent.ShareStop(fromId))
     }
 
+    private val shareControlListener = Emitter.Listener { args ->
+        val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+        val type = payload.optString("type", "")
+        val cmd = when (type) {
+            "scroll" -> ControlCommand.Scroll(
+                payload.optInt("deltaX", 0),
+                payload.optInt("deltaY", 0),
+            )
+            "scroll-to" -> ControlCommand.ScrollTo(
+                payload.optInt("x", 0),
+                payload.optInt("y", 0),
+            )
+            "click" -> ControlCommand.Click(
+                payload.optDouble("xPct", 0.0).toFloat(),
+                payload.optDouble("yPct", 0.0).toFloat(),
+            )
+            else -> return@Listener
+        }
+        _events.tryEmit(SocketEvent.Control(cmd))
+    }
+
     fun connect(serverUrl: String, device: DeviceInfo) {
         disconnect()
         deviceInfo = device
@@ -76,6 +104,7 @@ class PixelpeekSocket {
         s.on("load-url", loadUrlListener)
         s.on("share-request", shareRequestListener)
         s.on("share-stop", shareStopListener)
+        s.on("share-control", shareControlListener)
         s.connect()
     }
 
@@ -142,6 +171,7 @@ class PixelpeekSocket {
         socket?.off("load-url", loadUrlListener)
         socket?.off("share-request", shareRequestListener)
         socket?.off("share-stop", shareStopListener)
+        socket?.off("share-control", shareControlListener)
         socket?.disconnect()
         socket?.off()
         socket = null

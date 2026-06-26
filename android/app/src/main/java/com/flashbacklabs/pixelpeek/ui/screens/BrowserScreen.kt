@@ -1,7 +1,11 @@
 package com.flashbacklabs.pixelpeek.ui.screens
 
 import android.annotation.SuppressLint
+import android.os.SystemClock
+import android.util.Log
+import android.view.MotionEvent
 import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -25,6 +29,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,15 +40,64 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.flashbacklabs.pixelpeek.net.ControlCommand
 import com.flashbacklabs.pixelpeek.ui.theme.PixelpeekMono
 import com.flashbacklabs.pixelpeek.ui.theme.PixelpeekPalette
+import kotlinx.coroutines.flow.SharedFlow
 
-@SuppressLint("SetJavaScriptEnabled")
+private const val CONSOLE_BRIDGE_NAME = "__PixelpeekBridge"
+
+/**
+ * Reliable console capture: a JavaScript shim wraps `console.log/warn/error/...` and pipes every
+ * call through a JS interface to native code. WebChromeClient.onConsoleMessage stays as a fallback
+ * for messages emitted before our shim is installed (or by sources that bypass `console`).
+ */
+private const val CONSOLE_SHIM_JS = """
+(function() {
+  if (window.__pixelpeekShimInstalled) return;
+  window.__pixelpeekShimInstalled = true;
+  function send(level, args) {
+    try {
+      var parts = [];
+      for (var i = 0; i < args.length; i++) {
+        var a = args[i];
+        if (a == null) parts.push(String(a));
+        else if (typeof a === 'string') parts.push(a);
+        else if (a instanceof Error) parts.push(a.stack || (a.name + ': ' + a.message));
+        else {
+          try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
+        }
+      }
+      if (typeof $CONSOLE_BRIDGE_NAME !== 'undefined' && $CONSOLE_BRIDGE_NAME && $CONSOLE_BRIDGE_NAME.postLog) {
+        $CONSOLE_BRIDGE_NAME.postLog(level, parts.join(' '), location.href || '', 0);
+      }
+    } catch (e) {}
+  }
+  var orig = { log: console.log, info: console.info, warn: console.warn, error: console.error, debug: console.debug };
+  console.log = function() { send('LOG', arguments); return orig.log.apply(console, arguments); };
+  console.info = function() { send('LOG', arguments); return orig.info.apply(console, arguments); };
+  console.warn = function() { send('WARNING', arguments); return orig.warn.apply(console, arguments); };
+  console.error = function() { send('ERROR', arguments); return orig.error.apply(console, arguments); };
+  console.debug = function() { send('DEBUG', arguments); return orig.debug.apply(console, arguments); };
+  window.addEventListener('error', function(e) {
+    send('ERROR', [(e.message || 'Error') + (e.filename ? ' at ' + e.filename + ':' + e.lineno : '')]);
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    var r = e.reason;
+    send('ERROR', ['Unhandled rejection: ' + (r && r.stack ? r.stack : String(r))]);
+  });
+  // Self-test so the host can confirm the pipeline is working.
+  send('LOG', ['[Pixelpeek] console bridge attached on ' + (location.href || 'page')]);
+})();
+"""
+
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable
 fun BrowserScreen(
     url: String,
     onSizeChanged: (Int, Int) -> Unit,
     onConsoleMessage: (level: String, message: String, source: String, line: Int) -> Unit = { _, _, _, _ -> },
+    controlCommands: SharedFlow<ControlCommand>? = null,
     isFullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
     isSharing: Boolean = false,
@@ -49,6 +106,48 @@ fun BrowserScreen(
     val horizontalPad = if (isFullscreen) 0.dp else 12.dp
     val verticalPad = if (isFullscreen) 0.dp else 8.dp
     val cornerRadius = if (isFullscreen) 0.dp else 14.dp
+
+    val callback by rememberUpdatedState(onConsoleMessage)
+    val webViewRef = remember { arrayOfNulls<WebView>(1) }
+
+    // Drive remote scroll / click commands from the host into the WebView.
+    LaunchedEffect(controlCommands) {
+        controlCommands?.collect { cmd ->
+            val web = webViewRef[0] ?: return@collect
+            when (cmd) {
+                is ControlCommand.Scroll -> web.post {
+                    web.scrollBy(cmd.deltaX, cmd.deltaY)
+                }
+                is ControlCommand.ScrollTo -> web.post {
+                    web.evaluateJavascript(
+                        "window.scrollTo(${cmd.x}, ${cmd.y});",
+                        null,
+                    )
+                }
+                is ControlCommand.Click -> web.post {
+                    // The host captures the entire device screen, but only the WebView
+                    // should receive the synthetic touch. Map normalized image fraction
+                    // → screen pixel → WebView-local pixel and reject taps outside.
+                    val dm = web.context.resources.displayMetrics
+                    val loc = IntArray(2).also(web::getLocationOnScreen)
+                    val screenX = cmd.xPct * dm.widthPixels
+                    val screenY = cmd.yPct * dm.heightPixels
+                    val xInView = screenX - loc[0]
+                    val yInView = screenY - loc[1]
+                    if (xInView < 0f || yInView < 0f ||
+                        xInView > web.width.toFloat() || yInView > web.height.toFloat()
+                    ) return@post
+                    val now = SystemClock.uptimeMillis()
+                    val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, xInView, yInView, 0)
+                    val up = MotionEvent.obtain(now, now + 60, MotionEvent.ACTION_UP, xInView, yInView, 0)
+                    web.dispatchTouchEvent(down)
+                    web.dispatchTouchEvent(up)
+                    down.recycle()
+                    up.recycle()
+                }
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -81,10 +180,34 @@ fun BrowserScreen(
                         settings.domStorageEnabled = true
                         settings.useWideViewPort = true
                         settings.loadWithOverviewMode = true
-                        webViewClient = WebViewClient()
+                        addJavascriptInterface(
+                            object {
+                                @JavascriptInterface
+                                fun postLog(level: String?, message: String?, source: String?, line: Int) {
+                                    Log.d("PixelpeekBridge", "postLog level=$level msg=${message?.take(80)}")
+                                    callback(
+                                        level ?: "LOG",
+                                        message ?: "",
+                                        source ?: "",
+                                        line,
+                                    )
+                                }
+                            },
+                            CONSOLE_BRIDGE_NAME,
+                        )
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView, u: String?, favicon: android.graphics.Bitmap?) {
+                                super.onPageStarted(view, u, favicon)
+                                view.evaluateJavascript(CONSOLE_SHIM_JS, null)
+                            }
+                            override fun onPageFinished(view: WebView, u: String?) {
+                                super.onPageFinished(view, u)
+                                view.evaluateJavascript(CONSOLE_SHIM_JS, null)
+                            }
+                        }
                         webChromeClient = object : WebChromeClient() {
                             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-                                onConsoleMessage(
+                                callback(
                                     message.messageLevel().name,
                                     message.message() ?: "",
                                     message.sourceId() ?: "",
@@ -93,6 +216,7 @@ fun BrowserScreen(
                                 return true
                             }
                         }
+                        webViewRef[0] = this
                     }
                 },
                 update = { webView ->

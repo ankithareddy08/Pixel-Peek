@@ -104,6 +104,7 @@ fun PixelpeekApp(viewModel: PixelpeekViewModel) {
                             url = ui.currentUrl,
                             onSizeChanged = viewModel::reportViewport,
                             onConsoleMessage = viewModel::emitConsoleMessage,
+                            controlCommands = viewModel.controlCommands,
                             isFullscreen = isFullscreen,
                             onToggleFullscreen = { isFullscreen = !isFullscreen },
                             isSharing = ui.shareState == ShareState.Active,

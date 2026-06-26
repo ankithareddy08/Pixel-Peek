@@ -122,8 +122,61 @@ socket.on('disconnect', () => {
   gearDot.className = 'dot disconnected';
 });
 
+const frameErrorEl = document.getElementById('frame-error');
+const frameErrorOpenEl = document.getElementById('frame-error-open');
+
+let frameLoadCheckTimer = null;
+
+function showFrameError(url) {
+  if (!frameErrorEl) return;
+  if (frameErrorOpenEl) {
+    frameErrorOpenEl.href = url;
+    frameErrorOpenEl.textContent = `Open ${url} in a new tab`;
+  }
+  frameErrorEl.hidden = false;
+  frameEl.style.visibility = 'hidden';
+}
+function hideFrameError() {
+  if (!frameErrorEl) return;
+  frameErrorEl.hidden = true;
+  frameEl.style.visibility = '';
+}
+
+frameEl.addEventListener('load', () => {
+  if (frameLoadCheckTimer) clearTimeout(frameLoadCheckTimer);
+  // After load, try to read the iframe location. Cross-origin = SecurityError = the page loaded fine.
+  // Same-origin but the iframe is showing about:blank likely means the target blocked us
+  // via X-Frame-Options / CSP frame-ancestors.
+  try {
+    const href = frameEl.contentWindow?.location?.href;
+    if (!href || href === 'about:blank') {
+      // Iframe finished load on about:blank — probably blocked by X-Frame-Options
+      if (frameEl.dataset.intendedUrl && frameEl.dataset.intendedUrl !== 'about:blank') {
+        showFrameError(frameEl.dataset.intendedUrl);
+      }
+    } else {
+      hideFrameError();
+    }
+  } catch {
+    // Cross-origin — iframe is actually loaded with a different-origin page → OK
+    hideFrameError();
+  }
+});
+
 socket.on('load-url', ({ url }) => {
+  hideFrameError();
+  frameEl.dataset.intendedUrl = url;
   frameEl.src = url;
+  // If we never get a load event within 6s, the embed almost certainly failed.
+  if (frameLoadCheckTimer) clearTimeout(frameLoadCheckTimer);
+  frameLoadCheckTimer = setTimeout(() => {
+    try {
+      const href = frameEl.contentWindow?.location?.href;
+      if (!href || href === 'about:blank') showFrameError(url);
+    } catch {
+      // cross-origin = succeeded
+    }
+  }, 6000);
 });
 
 renameBtn.addEventListener('click', () => {
@@ -309,6 +362,23 @@ socket.on('share-stop', () => {
     socket.emit('share-ended', { targetId: shareState.hostId });
   }
   stopShare();
+});
+
+// Host can scroll the page the client is showing. Same-origin pages get
+// programmatic scroll; cross-origin pages are inaccessible via JS so we
+// silently no-op (the host operator should load same-origin content for control).
+socket.on('share-control', ({ type, deltaX, deltaY, x, y }) => {
+  const win = frameEl?.contentWindow;
+  if (!win) return;
+  try {
+    if (type === 'scroll') {
+      win.scrollBy(deltaX || 0, deltaY || 0);
+    } else if (type === 'scroll-to') {
+      win.scrollTo(x || 0, y || 0);
+    }
+  } catch {
+    // cross-origin frame — cannot script
+  }
 });
 
 function stopShare() {

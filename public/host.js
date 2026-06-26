@@ -633,6 +633,86 @@ socket.on('share-ended', ({ fromId }) => {
   handleShareStopLocally(fromId);
 });
 
+// ---- remote scroll control ----
+// While viewing a sharing device's stream, scrolling/dragging over the preview image
+// is forwarded to the device so the host can scroll the page on the device.
+
+function sendScroll(deltaX, deltaY) {
+  if (!openDeviceId || !activeShareIds.has(openDeviceId)) return;
+  if (deltaX === 0 && deltaY === 0) return;
+  socket.emit('share-control', {
+    targetId: openDeviceId,
+    type: 'scroll',
+    deltaX: Math.round(deltaX),
+    deltaY: Math.round(deltaY),
+  });
+}
+
+function sendClick(xPct, yPct) {
+  if (!openDeviceId || !activeShareIds.has(openDeviceId)) return;
+  if (xPct < 0 || xPct > 1 || yPct < 0 || yPct > 1) return;
+  socket.emit('share-control', {
+    targetId: openDeviceId,
+    type: 'click',
+    xPct,
+    yPct,
+  });
+}
+
+shareImage.addEventListener('wheel', (e) => {
+  if (!openDeviceId || !activeShareIds.has(openDeviceId)) return;
+  e.preventDefault();
+  sendScroll(e.deltaX, e.deltaY);
+}, { passive: false });
+
+// Tap = quick mousedown+mouseup with no drag. Drag = scroll.
+const DRAG_THRESHOLD_PX = 5;
+let dragState = null;
+
+shareImage.addEventListener('mousedown', (e) => {
+  if (!openDeviceId || !activeShareIds.has(openDeviceId)) return;
+  dragState = {
+    x: e.clientX,
+    y: e.clientY,
+    startX: e.clientX,
+    startY: e.clientY,
+    moved: false,
+  };
+  shareImage.style.cursor = 'grabbing';
+  e.preventDefault();
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!dragState) return;
+  const totalDx = Math.abs(e.clientX - dragState.startX);
+  const totalDy = Math.abs(e.clientY - dragState.startY);
+  if (totalDx > DRAG_THRESHOLD_PX || totalDy > DRAG_THRESHOLD_PX) dragState.moved = true;
+  if (dragState.moved) {
+    const dx = dragState.x - e.clientX;
+    const dy = dragState.y - e.clientY;
+    if (Math.abs(dx) >= 2 || Math.abs(dy) >= 2) {
+      sendScroll(dx, dy);
+      dragState.x = e.clientX;
+      dragState.y = e.clientY;
+    }
+  }
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!dragState) return;
+  const wasTap = !dragState.moved;
+  dragState = null;
+  shareImage.style.cursor = '';
+  if (wasTap) {
+    const rect = shareImage.getBoundingClientRect();
+    const xPct = (e.clientX - rect.left) / rect.width;
+    const yPct = (e.clientY - rect.top) / rect.height;
+    sendClick(xPct, yPct);
+  }
+});
+
+shareImage.style.cursor = 'grab';
+
 socket.on('console-log', (entry) => {
   if (!entry || !entry.deviceId) return;
   const arr = deviceLogs.get(entry.deviceId) || [];

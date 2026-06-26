@@ -91,6 +91,18 @@
 
   <div id="frame-wrap">
     <iframe id="frame" src="about:blank" allow="fullscreen; clipboard-read; clipboard-write"></iframe>
+    <div id="frame-error" class="frame-error" hidden>
+      <strong>This site can't be loaded in an iframe.</strong>
+      <p>
+        The page sets <code>X-Frame-Options</code> or a strict <code>Content-Security-Policy</code>
+        that blocks browser embedding. This is a browser-enforced security restriction we can't bypass from JavaScript.
+      </p>
+      <p>
+        Use the <strong>Pixelpeek Android app</strong> to test this URL — the native WebView is not
+        subject to iframe restrictions and works with any site.
+      </p>
+      <a id="frame-error-open" target="_blank" rel="noopener">Open the page in a new tab</a>
+    </div>
   </div>
   <script src="/socket.io/socket.io.js"></script>
   <script src="/client.js"></script>

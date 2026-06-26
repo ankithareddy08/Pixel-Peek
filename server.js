@@ -86,6 +86,8 @@ app.get('/health', (req, res) => {
 });
 
 const devices = new Map();
+const latestFrames = new Map(); // socketId -> { buffer, width, height, ts } — last live share frame
+const FRAME_TTL_MS = 30000;      // frames older than this are considered stale
 let lastBroadcastUrl = null;
 
 function snapshot() {
@@ -168,17 +170,37 @@ io.on('connection', (socket) => {
 
     let okCount = 0;
     let errCount = 0;
+    console.log(`[capture] ${targets.length} target(s). Buffered frames for: [${Array.from(latestFrames.keys()).join(', ')}]`);
     await Promise.all(
       targets.map(async (d) => {
         const targetUrl = override || d.currentUrl;
         try {
-          const { filename } = await captureDevice({
-            url: targetUrl,
-            width: d.width,
-            height: d.height,
-            label: d.label,
-            outputDir: sessionDir,
-          });
+          const live = latestFrames.get(d.id);
+          const liveAge = live ? Date.now() - live.ts : null;
+          console.log(`[capture] device ${d.id} (${d.label}): live frame ${live ? `present, age=${liveAge}ms` : 'MISSING'}`);
+          let filename;
+          let source;
+          if (live && Date.now() - live.ts < FRAME_TTL_MS) {
+            // Use the device's actual on-screen state from the active share stream.
+            // Preserves scroll position, opened menus, consent dialogs that the user
+            // already dismissed, etc.
+            filename = `${String(d.label || 'device').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}-${d.width}x${d.height}.jpg`;
+            await mkdir(sessionDir, { recursive: true });
+            await writeFile(join(sessionDir, filename), live.buffer);
+            source = 'live';
+          } else {
+            // No active share — fall back to a fresh Playwright render at the
+            // device's reported viewport.
+            const result = await captureDevice({
+              url: targetUrl,
+              width: d.width,
+              height: d.height,
+              label: d.label,
+              outputDir: sessionDir,
+            });
+            filename = result.filename;
+            source = 'fresh';
+          }
           okCount++;
           io.to('hosts').emit('screenshot-captured', {
             id: d.id,
@@ -187,6 +209,7 @@ io.on('connection', (socket) => {
             height: d.height,
             url: targetUrl,
             path: `/screenshots/${stamp}/${filename}`,
+            source,
             capturedAt: Date.now(),
           });
         } catch (err) {
@@ -249,9 +272,33 @@ io.on('connection', (socket) => {
   }
   relayShare('share-request', true);
   relayShare('share-stop', true);
-  relayShare('share-frame', false);
+  relayShare('share-control', true);   // host -> device: scroll/click commands
   relayShare('share-failed', false);
   relayShare('share-ended', false);
+
+  // share-frame is relayed AND buffered server-side so "Capture now" can use
+  // the device's current on-screen state instead of re-fetching the URL fresh.
+  let framesSeen = 0;
+  socket.on('share-frame', ({ targetId, frame, width, height } = {}) => {
+    if (frame) {
+      try {
+        latestFrames.set(socket.id, {
+          buffer: Buffer.from(frame, 'base64'),
+          width: Number(width) || 0,
+          height: Number(height) || 0,
+          ts: Date.now(),
+        });
+        framesSeen++;
+        if (framesSeen === 1 || framesSeen % 50 === 0) {
+          console.log(`[share-frame] buffered for ${socket.id} (${framesSeen} frames, ${latestFrames.get(socket.id).buffer.length} bytes)`);
+        }
+      } catch (err) {
+        console.error('[share-frame] buffer failed:', err.message);
+      }
+    }
+    if (!targetId || !io.sockets.sockets.get(targetId)) return;
+    io.to(targetId).emit('share-frame', { fromId: socket.id, frame, width, height });
+  });
 
   // Forward each device's web console output to all hosts. Hosts use this to debug
   // what's happening inside the page running on the device.
@@ -270,6 +317,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    latestFrames.delete(socket.id);
     if (devices.delete(socket.id)) broadcastDeviceList();
   });
 });

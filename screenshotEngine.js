@@ -31,7 +31,7 @@ function safeFilename(label) {
   return String(label || 'device').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
 }
 
-export async function captureDevice({ url, width, height, label, outputDir, timeoutMs = 15000 }) {
+export async function captureDevice({ url, width, height, label, outputDir, timeoutMs = 30000 }) {
   const b = await getBrowser();
   const isMobile = width < 768;
 
@@ -44,12 +44,14 @@ export async function captureDevice({ url, width, height, label, outputDir, time
   });
   const page = await context.newPage();
   try {
-    await page.goto(url, { waitUntil: 'load', timeout: timeoutMs });
-    await page.waitForTimeout(2000);
+    // waitUntil: 'domcontentloaded' is much more reliable than 'load' for sites
+    // with slow third-party assets (ads, trackers, analytics).
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    await page.waitForTimeout(1500);
     const filename = `${safeFilename(label)}-${width}x${height}.png`;
     await mkdir(outputDir, { recursive: true });
     const filepath = join(outputDir, filename);
-    await page.screenshot({ path: filepath, fullPage: true });
+    await page.screenshot({ path: filepath, fullPage: false });
     return { filename, filepath };
   } finally {
     await context.close();

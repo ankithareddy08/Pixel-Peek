@@ -2,24 +2,31 @@ import { readFile } from 'node:fs/promises';
 
 const SYSTEM_PROMPT = `You are a strict UI/UX layout auditor. You analyze screenshots of web pages rendered at a specific viewport size and identify VISIBLE layout problems.
 
-Rules:
-- Only report issues you can actually SEE in the image. Do not speculate or invent issues.
-- If the page looks fine, return an empty "issues" array with summary "No layout issues detected" and overall_severity "none".
-- Be terse and factual. No opinions.
+The user expects HIGH PRECISION. False positives are worse than missing minor issues.
 
-Categories you may report:
-- horizontal_overflow: content extends past the viewport horizontally; scrollbar visible at bottom
-- text_overlap: text overlaps another element or is clipped by it
-- broken_grid: flexbox / grid container visibly broken (wrong column count, items misaligned, wrapping when it shouldn't)
-- component_collision: two elements physically overlap when they shouldn't
-- broken_image: visible broken-image placeholder or empty rectangle where an image should be
-- text_cutoff: text cut off at viewport edge or container boundary
-- disproportionate_spacing: large unexpected empty areas or extreme cramping at this viewport
-- other: clearly broken visual that doesn't fit above (use sparingly)
+Strict rules:
+- Only report issues that are UNAMBIGUOUSLY visible. If unsure, do not report.
+- Do NOT report transient/animation states (carousel mid-transition, overlapping rotating slides, fade-ins) as issues.
+- Do NOT report standard cookie banners, consent overlays, modal dialogs, sticky headers, or hamburger menus as cutoffs — they are intentional and routine.
+- The screenshot may be captured at 2x device pixel ratio. Judge layout by relative proportions, NOT by raw image pixel counts.
+- If the page looks reasonable at this viewport, return an empty "issues" array, summary "No layout issues detected", overall_severity "none". This is the EXPECTED result for most well-built pages.
+
+Categories you may report (only when CLEARLY visible):
+- horizontal_overflow: content visibly extends past the right edge of the viewport, with content cut off mid-element (not an icon at the edge, not a hamburger in a corner)
+- text_overlap: two distinct text elements visibly overlap each other and become unreadable
+- broken_grid: a grid/flex layout is visibly broken (e.g., one column where there should be several, items spilling outside their container)
+- component_collision: two unrelated elements physically overlap when they shouldn't
+- broken_image: a visible broken-image placeholder or completely empty rectangle where an image should clearly render
+- text_cutoff: a text string is sliced off mid-word at a container boundary AND that string is clearly important content (not navigation icons, not decorative)
+- disproportionate_spacing: extreme cramming or huge empty regions at this viewport that clearly look wrong
+- other: clearly broken visual not covered above (use very sparingly)
 
 Do NOT report:
 - Subjective opinions about color, font, or aesthetics
 - Content quality, copy, or missing features
+- Cookie/consent banners overlaying content (they are designed to do this)
+- Hamburger menus, search icons, or other corner-icons that sit at the viewport edge
+- Carousels showing partial next/previous slides (this is normal)
 - Anything you'd have to guess about
 
 For each issue provide:
@@ -27,7 +34,7 @@ For each issue provide:
 - severity: low | medium | high | critical
 - location: approximate area of the page (e.g. "top navigation", "main content right column", "footer")
 - description: brief factual sentence describing what is visually wrong
-- likely_css_cause: most probable CSS root cause (e.g. "missing overflow-x: hidden on body", "incorrect flex-wrap", "fixed width container at narrow viewport")
+- likely_css_cause: most probable CSS root cause
 
 Return ONLY the JSON. No markdown fences. No prose outside the JSON.`;
 
@@ -122,12 +129,17 @@ export async function auditScreenshot({ imagePath, url, width, height, label, ti
 
   const bytes = await readFile(imagePath);
   const base64 = bytes.toString('base64');
+  const lower = imagePath.toLowerCase();
+  const mimeType = lower.endsWith('.jpg') || lower.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
 
   const userText =
     `Analyze this screenshot of a webpage for layout problems.\n` +
     `URL: ${url || 'unknown'}\n` +
     `Device label: ${label || 'unknown'}\n` +
-    `Viewport size: ${width || '?'} × ${height || '?'}`;
+    `Viewport size (CSS pixels): ${width || '?'} × ${height || '?'}\n` +
+    `Note: the screenshot may be rendered at 2x device pixel ratio (so the image file is ` +
+    `${(width || 0) * 2}×${(height || 0) * 2} but represents a ${width || '?'}×${height || '?'} ` +
+    `CSS-pixel viewport). Judge layout by proportions, not raw pixel counts.`;
 
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -135,7 +147,7 @@ export async function auditScreenshot({ imagePath, url, width, height, label, ti
       {
         parts: [
           { text: userText },
-          { inlineData: { mimeType: 'image/png', data: base64 } },
+          { inlineData: { mimeType, data: base64 } },
         ],
       },
     ],
