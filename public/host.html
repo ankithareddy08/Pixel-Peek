@@ -32,6 +32,10 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
           <span>Dashboard</span>
         </a>
+        <a class="nav-item" href="#connect">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><path d="M3 14h4v4H3z"></path><path d="M10 17h1"></path><path d="M17 10h1"></path><path d="M10 21h4"></path></svg>
+          <span>Connect</span>
+        </a>
         <a class="nav-item" href="#devices">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"></rect><line x1="12" y1="18" x2="12" y2="18"></line></svg>
           <span>Devices</span>
@@ -49,7 +53,7 @@
       <div class="side-footer">
         <div class="connect-hint">
           <p class="hint-title">Add a device</p>
-          <p class="hint-body">Open <code>/client</code> on any device on this network.</p>
+          <p class="hint-body">Scan the run QR or enter the displayed code on a client device.</p>
         </div>
       </div>
     </aside>
@@ -74,6 +78,40 @@
         <button id="share-banner-view" type="button" class="btn btn-ghost btn-sm">View stream</button>
         <button id="share-banner-stop" type="button" class="btn btn-danger btn-sm">Stop sharing</button>
       </div>
+
+      <section class="card connect-card" id="connect">
+        <div class="connect-copy">
+          <p class="eyebrow">Current run</p>
+          <div class="run-code-row">
+            <span id="run-code" class="run-code">------</span>
+            <button id="copy-code-btn" type="button" class="icon-btn" title="Copy run code" aria-label="Copy run code">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
+          </div>
+          <p class="card-sub">Clients join this isolated test run by scanning the QR or entering the code.</p>
+          <div class="connect-actions">
+            <button id="show-connect-btn" type="button" class="btn btn-primary">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><path d="M3 14h4v4H3z"></path></svg>
+              <span>Show QR</span>
+            </button>
+            <button id="new-run-btn" type="button" class="btn btn-ghost">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>
+              <span>New run</span>
+            </button>
+          </div>
+        </div>
+        <div class="connect-qr-shell" aria-hidden="true">
+          <img id="connect-qr-inline" class="connect-qr" alt="" />
+        </div>
+        <div class="connect-link-panel">
+          <label for="connect-link-select" class="panel-label">Client link</label>
+          <select id="connect-link-select"></select>
+          <div class="link-copy-row">
+            <input id="connect-link-input" type="text" readonly />
+            <button id="copy-link-btn" type="button" class="btn btn-ghost btn-sm">Copy</button>
+          </div>
+        </div>
+      </section>
 
       <section class="stats" aria-label="overview">
         <article class="stat-card">
@@ -136,10 +174,16 @@
           <p class="card-sub">Take a synchronized screenshot across all connected devices.</p>
           <span id="capture-status"></span>
         </div>
-        <button id="capture-btn" type="button" class="btn btn-success">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
-          <span>Capture now</span>
-        </button>
+        <div class="capture-actions">
+          <button id="share-all-btn" type="button" class="btn btn-ghost" disabled>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+            <span>Share all</span>
+          </button>
+          <button id="capture-btn" type="button" class="btn btn-success">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+            <span>Capture now</span>
+          </button>
+        </div>
       </section>
 
       <section class="section" id="devices">
@@ -208,15 +252,44 @@
         </div>
         <aside class="logs-panel">
           <header class="logs-head">
-            <strong>Web console</strong>
+            <strong>Device logs</strong>
             <div class="logs-actions">
               <button id="logs-clear" type="button" class="btn btn-ghost btn-sm">Clear</button>
             </div>
           </header>
           <div id="logs-list" class="logs-list" role="log" aria-live="polite">
-            <div class="logs-empty">Console messages from the page running on this device will appear here.</div>
+            <div class="logs-empty">URL load events and console messages from this device will appear here.</div>
           </div>
         </aside>
+      </div>
+    </div>
+  </div>
+
+  <div id="connect-modal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="connect-dialog">
+      <header class="connect-dialog-head">
+        <div>
+          <p class="eyebrow">Host run</p>
+          <strong>Connect devices</strong>
+        </div>
+        <button id="connect-close" type="button" aria-label="Close connection panel">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </header>
+      <div class="connect-dialog-body">
+        <div class="qr-panel">
+          <img id="connect-qr-modal" class="connect-qr large" alt="Client connection QR code" />
+        </div>
+        <div class="code-panel">
+          <span class="panel-label">Run code</span>
+          <span id="run-code-modal" class="run-code large">------</span>
+          <p>Client devices can scan the QR or enter this code from the Pixelpeek client screen.</p>
+          <div class="modal-actions">
+            <button id="copy-code-modal-btn" type="button" class="btn btn-primary">Copy code</button>
+            <button id="copy-link-modal-btn" type="button" class="btn btn-ghost">Copy link</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -19,6 +20,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.flashbacklabs.pixelpeek.ui.theme.PixelpeekPalette
 
@@ -26,8 +29,10 @@ import com.flashbacklabs.pixelpeek.ui.theme.PixelpeekPalette
 @Composable
 fun SettingsSheet(
     serverUrl: String,
+    runCode: String,
     label: String,
     onServerChange: (String) -> Unit,
+    onRunCodeChange: (String) -> Unit,
     onLabelChange: (String) -> Unit,
     onDismiss: () -> Unit,
     onApply: () -> Unit,
@@ -48,9 +53,9 @@ fun SettingsSheet(
                 .padding(horizontal = 22.dp, vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Device settings", style = MaterialTheme.typography.titleLarge, color = PixelpeekPalette.Text)
+            Text("Client settings", style = MaterialTheme.typography.titleLarge, color = PixelpeekPalette.Text)
             Text(
-                "Configure where this device connects and what the host should call it.",
+                "Configure the host server, run code, and device label for this client.",
                 style = MaterialTheme.typography.bodySmall,
                 color = PixelpeekPalette.TextMuted,
             )
@@ -62,6 +67,21 @@ fun SettingsSheet(
                 singleLine = true,
                 placeholder = { Text("http://192.168.x.x:4000", color = PixelpeekPalette.TextFaint) },
                 modifier = Modifier.fillMaxWidth(),
+                colors = pixelpeekFieldColors(),
+                shape = RoundedCornerShape(12.dp),
+            )
+
+            FieldLabel("Run code")
+            OutlinedTextField(
+                value = runCode,
+                onValueChange = onRunCodeChange,
+                singleLine = true,
+                placeholder = { Text("ABC123", color = PixelpeekPalette.TextFaint) },
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Characters,
+                    keyboardType = KeyboardType.Ascii,
+                ),
                 colors = pixelpeekFieldColors(),
                 shape = RoundedCornerShape(12.dp),
             )
@@ -87,7 +107,7 @@ fun SettingsSheet(
                     containerColor = PixelpeekPalette.Accent,
                     contentColor = Color.White,
                 ),
-            ) { Text("Save & connect", style = MaterialTheme.typography.titleMedium) }
+            ) { Text("Save and connect", style = MaterialTheme.typography.titleMedium) }
         }
     }
 }

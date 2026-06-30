@@ -2,14 +2,56 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Pixelpeek — Device</title>
+  <title>Pixelpeek - Device</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/client.css" />
 </head>
-<body>
+<body class="needs-join">
+  <main id="join-screen" class="join-screen" aria-labelledby="join-title">
+    <section class="join-panel">
+      <div class="join-brand">
+        <div class="join-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="2" width="14" height="20" rx="2"></rect>
+            <path d="M12 18h.01"></path>
+          </svg>
+        </div>
+        <div>
+          <p class="eyebrow">Pixelpeek client</p>
+          <h1 id="join-title">Join a host run</h1>
+        </div>
+      </div>
+
+      <form id="join-form" class="join-form">
+        <label for="run-code-input">Run code</label>
+        <div class="join-row">
+          <input id="run-code-input" type="text" inputmode="text" autocomplete="one-time-code" maxlength="12" placeholder="ABC123" />
+          <button id="join-btn" type="submit">Join</button>
+        </div>
+        <p id="join-status" class="join-status"></p>
+      </form>
+
+      <div class="scan-panel">
+        <div class="scan-head">
+          <span class="panel-label">QR scan</span>
+          <div class="scan-actions">
+            <button id="scan-start" type="button">Scan</button>
+            <button id="scan-stop" type="button" hidden>Stop</button>
+          </div>
+        </div>
+        <div class="scan-stage">
+          <video id="scan-video" playsinline muted></video>
+          <div id="scan-placeholder">Camera scanner is idle.</div>
+        </div>
+      </div>
+
+      <a class="host-link" href="/">Switch role</a>
+    </section>
+  </main>
+
   <div id="share-banner" hidden role="dialog" aria-label="screen share request">
     <span class="share-banner-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -56,7 +98,7 @@
       <label class="panel-label">Viewport</label>
       <div class="viewport-controls">
         <input id="w-input" type="number" min="100" max="9999" step="1" title="width" />
-        <span class="x">×</span>
+        <span class="x">x</span>
         <input id="h-input" type="number" min="100" max="9999" step="1" title="height" />
         <button id="apply-btn" type="button">Apply</button>
         <button id="fit-btn" type="button" title="match window">Fit</button>
@@ -66,17 +108,17 @@
     <div class="panel-section">
       <label class="panel-label">Preset</label>
       <select id="preset-select" title="device presets">
-        <option value="">Choose a preset…</option>
-        <option value="375,667">iPhone SE — 375×667</option>
-        <option value="390,844">iPhone 14 — 390×844</option>
-        <option value="430,932">iPhone 14 Pro Max — 430×932</option>
-        <option value="412,915">Pixel 7 — 412×915</option>
-        <option value="360,800">Android (small) — 360×800</option>
-        <option value="768,1024">iPad — 768×1024</option>
-        <option value="1024,1366">iPad Pro — 1024×1366</option>
-        <option value="1280,800">Laptop — 1280×800</option>
-        <option value="1440,900">Desktop — 1440×900</option>
-        <option value="1920,1080">Full HD — 1920×1080</option>
+        <option value="">Choose a preset...</option>
+        <option value="375,667">iPhone SE - 375x667</option>
+        <option value="390,844">iPhone 14 - 390x844</option>
+        <option value="430,932">iPhone 14 Pro Max - 430x932</option>
+        <option value="412,915">Pixel 7 - 412x915</option>
+        <option value="360,800">Android small - 360x800</option>
+        <option value="768,1024">iPad - 768x1024</option>
+        <option value="1024,1366">iPad Pro - 1024x1366</option>
+        <option value="1280,800">Laptop - 1280x800</option>
+        <option value="1440,900">Desktop - 1440x900</option>
+        <option value="1920,1080">Full HD - 1920x1080</option>
       </select>
     </div>
 
@@ -92,14 +134,12 @@
   <div id="frame-wrap">
     <iframe id="frame" src="about:blank" allow="fullscreen; clipboard-read; clipboard-write"></iframe>
     <div id="frame-error" class="frame-error" hidden>
-      <strong>This site can't be loaded in an iframe.</strong>
-      <p>
-        The page sets <code>X-Frame-Options</code> or a strict <code>Content-Security-Policy</code>
-        that blocks browser embedding. This is a browser-enforced security restriction we can't bypass from JavaScript.
+      <strong id="frame-error-title">This site blocks web embedding.</strong>
+      <p id="frame-error-reason">
+        The target page uses browser security headers that prevent it from loading inside the Pixelpeek web client.
       </p>
       <p>
-        Use the <strong>Pixelpeek Android app</strong> to test this URL — the native WebView is not
-        subject to iframe restrictions and works with any site.
+        Use the <strong>Pixelpeek Android app</strong> for full in-device testing, or open the target in a new tab.
       </p>
       <a id="frame-error-open" target="_blank" rel="noopener">Open the page in a new tab</a>
     </div>

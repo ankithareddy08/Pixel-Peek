@@ -3,11 +3,13 @@ import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { Server } from 'socket.io';
 import { networkInterfaces } from 'node:os';
+import { randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import selfsigned from 'selfsigned';
+import QRCode from 'qrcode';
 import { captureDevice, shutdown as shutdownEngine } from './screenshotEngine.js';
 import { auditScreenshot } from './auditor.js';
 
@@ -71,7 +73,7 @@ io.attach(httpsServer);
 
 app.use(express.static(join(__dirname, 'public')));
 app.use('/screenshots', express.static(SCREENSHOTS_DIR));
-app.get('/', (req, res) => res.redirect('/host'));
+app.get('/', (req, res) => res.sendFile(join(__dirname, 'public', 'index.html')));
 app.get('/host', (req, res) => res.sendFile(join(__dirname, 'public', 'host.html')));
 app.get('/client', (req, res) => res.sendFile(join(__dirname, 'public', 'client.html')));
 app.get('/health', (req, res) => {
@@ -82,32 +84,444 @@ app.get('/health', (req, res) => {
     geminiKeyLength: key.length,
     geminiModel: process.env.GEMINI_MODEL || null,
     connectedDevices: devices.size,
+    activeRuns: runs.size,
   });
 });
 
-const devices = new Map();
-const latestFrames = new Map(); // socketId -> { buffer, width, height, ts } — last live share frame
-const FRAME_TTL_MS = 30000;      // frames older than this are considered stale
-let lastBroadcastUrl = null;
+app.get('/api/connect-options', (req, res) => {
+  const runCode = normalizeRunCode(req.query.runCode);
+  if (!runCode) {
+    res.status(400).json({ error: 'runCode is required' });
+    return;
+  }
 
-function snapshot() {
-  return Array.from(devices.values());
+  const requestProtocol = req.secure ? 'https' : 'http';
+  const requestHost = req.get('host');
+  const options = [];
+  if (requestHost) {
+    options.push({
+      id: 'current',
+      label: requestHost,
+      detail: requestProtocol.toUpperCase(),
+      url: clientUrl(`${requestProtocol}://${requestHost}`, runCode),
+      recommended: false,
+    });
+  }
+
+  for (const { name, address } of lanAddresses()) {
+    options.push({
+      id: `https-${address}`,
+      label: `${address}:${HTTPS_PORT}`,
+      detail: `${name} HTTPS`,
+      url: clientUrl(`https://${address}:${HTTPS_PORT}`, runCode),
+      recommended: true,
+    });
+    options.push({
+      id: `http-${address}`,
+      label: `${address}:${PORT}`,
+      detail: `${name} HTTP`,
+      url: clientUrl(`http://${address}:${PORT}`, runCode),
+      recommended: false,
+    });
+  }
+
+  res.json({ runCode, options });
+});
+
+app.get('/api/qr', async (req, res) => {
+  const data = String(req.query.data || '');
+  if (!data || data.length > 2048) {
+    res.status(400).send('invalid QR data');
+    return;
+  }
+
+  try {
+    const svg = await QRCode.toString(data, {
+      type: 'svg',
+      margin: 1,
+      color: { dark: '#e8eaf0', light: '#00000000' },
+    });
+    res.type('image/svg+xml').send(svg);
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+app.get('/api/frame-check', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const rawUrl = String(req.query.url || '').trim();
+  let target;
+  try {
+    target = new URL(rawUrl);
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      throw new Error('unsupported protocol');
+    }
+  } catch {
+    res.status(400).json({
+      ok: false,
+      embeddable: false,
+      reason: 'Enter a valid http or https URL.',
+    });
+    return;
+  }
+
+  try {
+    const headers = await fetchFramePolicyHeaders(target.toString());
+    const policy = analyzeFramePolicy({
+      targetUrl: headers.finalUrl || target.toString(),
+      embeddingOrigin: requestOrigin(req),
+      xFrameOptions: headers.xFrameOptions,
+      contentSecurityPolicy: headers.contentSecurityPolicy,
+    });
+
+    res.json({
+      ok: true,
+      embeddable: policy.embeddable,
+      reason: policy.reason,
+      finalUrl: headers.finalUrl,
+      status: headers.status,
+      headers: {
+        xFrameOptions: headers.xFrameOptions || null,
+        contentSecurityPolicy: headers.contentSecurityPolicy || null,
+      },
+    });
+  } catch (err) {
+    res.json({
+      ok: true,
+      embeddable: true,
+      uncertain: true,
+      reason: `Could not check frame policy before loading (${err.name || 'Error'}).`,
+    });
+  }
+});
+
+const devices = new Map();
+const runs = new Map();
+const latestFrames = new Map(); // socketId -> { base64, width, height, ts }
+const FRAME_TTL_MS = 30000;
+const RUN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const RUN_CODE_LENGTH = 6;
+const FRAME_POLICY_CHECK_TIMEOUT_MS = 4500;
+
+function requestOrigin(req) {
+  const forwardedProto = String(req.get('x-forwarded-proto') || '').split(',')[0].trim();
+  const protocol = forwardedProto || (req.secure ? 'https' : 'http');
+  return `${protocol}://${req.get('host')}`;
 }
 
-function broadcastDeviceList() {
-  io.to('hosts').emit('device-list', snapshot());
+async function fetchFramePolicyHeaders(targetUrl) {
+  let headError = null;
+  try {
+    const head = await fetchPolicyHeaders(targetUrl, 'HEAD');
+    if (head.xFrameOptions || head.contentSecurityPolicy || ![405, 501].includes(head.status)) {
+      return head;
+    }
+  } catch (err) {
+    headError = err;
+  }
+
+  try {
+    return await fetchPolicyHeaders(targetUrl, 'GET');
+  } catch (err) {
+    throw headError || err;
+  }
+}
+
+async function fetchPolicyHeaders(targetUrl, method) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FRAME_POLICY_CHECK_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(targetUrl, {
+      method,
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'user-agent': 'Pixelpeek frame policy check',
+      },
+    });
+
+    return {
+      status: response.status,
+      finalUrl: response.url || targetUrl,
+      xFrameOptions: response.headers.get('x-frame-options') || '',
+      contentSecurityPolicy: response.headers.get('content-security-policy') || '',
+    };
+  } finally {
+    clearTimeout(timer);
+    if (response?.body && method !== 'HEAD') {
+      try {
+        await response.body.cancel();
+      } catch {}
+    }
+  }
+}
+
+function analyzeFramePolicy({ targetUrl, embeddingOrigin, xFrameOptions, contentSecurityPolicy }) {
+  const targetOrigin = safeOrigin(targetUrl);
+  const embedOrigin = safeOrigin(embeddingOrigin);
+  const xfo = String(xFrameOptions || '').toUpperCase();
+
+  if (/\bDENY\b/.test(xfo)) {
+    return {
+      embeddable: false,
+      reason: 'The target sends X-Frame-Options: DENY, so browsers refuse to show it inside another page.',
+    };
+  }
+
+  if (/\bSAMEORIGIN\b/.test(xfo) && targetOrigin && embedOrigin && targetOrigin !== embedOrigin) {
+    return {
+      embeddable: false,
+      reason: 'The target sends X-Frame-Options: SAMEORIGIN, so it can only be framed by pages from the same site.',
+    };
+  }
+
+  const ancestorSources = frameAncestorSources(contentSecurityPolicy);
+  if (ancestorSources) {
+    const allows = frameAncestorsAllow(ancestorSources, targetOrigin, embedOrigin);
+    if (!allows) {
+      return {
+        embeddable: false,
+        reason: 'The target Content-Security-Policy frame-ancestors rule does not allow this Pixelpeek web client.',
+      };
+    }
+  }
+
+  return { embeddable: true, reason: '' };
+}
+
+function safeOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return '';
+  }
+}
+
+function frameAncestorSources(contentSecurityPolicy) {
+  const csp = String(contentSecurityPolicy || '');
+  if (!csp) return null;
+  const directives = csp
+    .replace(/,/g, ' ; ')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  for (const directive of directives) {
+    const parts = directive.split(/\s+/);
+    if (parts[0]?.toLowerCase() === 'frame-ancestors') return parts.slice(1);
+  }
+  return null;
+}
+
+function frameAncestorsAllow(sources, targetOrigin, embeddingOrigin) {
+  if (!Array.isArray(sources) || sources.length === 0) return false;
+  if (sources.some((source) => cleanSource(source).toLowerCase() === "'none'")) return false;
+  return sources.some((source) => sourceAllowsOrigin(source, targetOrigin, embeddingOrigin));
+}
+
+function sourceAllowsOrigin(source, targetOrigin, embeddingOrigin) {
+  const cleaned = cleanSource(source);
+  const lower = cleaned.toLowerCase();
+  if (!cleaned) return false;
+  if (cleaned === '*') return true;
+  if (lower === "'self'") return targetOrigin && targetOrigin === embeddingOrigin;
+
+  let embedUrl;
+  try {
+    embedUrl = new URL(embeddingOrigin);
+  } catch {
+    return false;
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:$/i.test(cleaned)) {
+    return cleaned.toLowerCase() === embedUrl.protocol;
+  }
+
+  let pattern = cleaned;
+  let protocol = '';
+  const protocolMatch = pattern.match(/^([a-z][a-z0-9+.-]*:)\/\//i);
+  if (protocolMatch) {
+    protocol = protocolMatch[1].toLowerCase();
+    pattern = pattern.slice(protocolMatch[0].length);
+  }
+  if (protocol && protocol !== embedUrl.protocol) return false;
+
+  pattern = pattern.split('/')[0];
+  let host = pattern;
+  let port = '';
+  if (pattern.startsWith('[')) {
+    const end = pattern.indexOf(']');
+    host = end >= 0 ? pattern.slice(1, end) : pattern;
+    port = pattern.slice(end + 1).replace(/^:/, '');
+  } else {
+    const colon = pattern.lastIndexOf(':');
+    if (colon > -1 && pattern.indexOf(':') === colon) {
+      host = pattern.slice(0, colon);
+      port = pattern.slice(colon + 1);
+    }
+  }
+
+  const embedHost = embedUrl.hostname.toLowerCase();
+  const sourceHost = host.toLowerCase();
+  if (port && port !== '*' && port !== (embedUrl.port || defaultPort(embedUrl.protocol))) return false;
+  if (sourceHost === '*') return true;
+  if (sourceHost.startsWith('*.')) return embedHost.endsWith(`.${sourceHost.slice(2)}`);
+  return sourceHost === embedHost;
+}
+
+function cleanSource(source) {
+  return String(source || '').trim().replace(/^,|,$/g, '');
+}
+
+function defaultPort(protocol) {
+  if (protocol === 'http:') return '80';
+  if (protocol === 'https:') return '443';
+  return '';
+}
+
+function normalizeRunCode(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 12);
+}
+
+function makeRunCode() {
+  let code = '';
+  for (let i = 0; i < RUN_CODE_LENGTH; i++) {
+    code += RUN_CODE_ALPHABET[randomInt(RUN_CODE_ALPHABET.length)];
+  }
+  return code;
+}
+
+function createRun(preferredCode) {
+  let code = normalizeRunCode(preferredCode);
+  if (!code) {
+    do {
+      code = makeRunCode();
+    } while (runs.has(code));
+  }
+  if (!runs.has(code)) {
+    runs.set(code, {
+      code,
+      hostIds: new Set(),
+      createdAt: Date.now(),
+      lastBroadcastUrl: null,
+    });
+  }
+  return runs.get(code);
+}
+
+function resolveClientRun(runCode) {
+  const normalized = normalizeRunCode(runCode);
+  if (normalized && runs.has(normalized)) return runs.get(normalized);
+  if (!normalized && runs.size === 1) return runs.values().next().value;
+  return null;
+}
+
+function hostRoom(runCode) {
+  return `hosts:${runCode}`;
+}
+
+function clientUrl(origin, runCode) {
+  const url = new URL('/client', origin);
+  url.searchParams.set('run', runCode);
+  return url.toString();
+}
+
+function snapshot(runCode) {
+  return Array.from(devices.values()).filter((device) => device.runCode === runCode);
+}
+
+function broadcastDeviceList(runCode) {
+  if (!runCode) return;
+  io.to(hostRoom(runCode)).emit('device-list', snapshot(runCode));
+}
+
+function joinHostRun(socket, run) {
+  const previousCode = socket.data.runCode;
+  if (previousCode && previousCode !== run.code) {
+    const previous = runs.get(previousCode);
+    if (previous) previous.hostIds.delete(socket.id);
+    socket.leave(hostRoom(previousCode));
+  }
+  socket.data.role = 'host';
+  socket.data.runCode = run.code;
+  run.hostIds.add(socket.id);
+  socket.join('hosts');
+  socket.join(hostRoom(run.code));
+}
+
+function runPayload(run) {
+  return {
+    code: run.code,
+    createdAt: run.createdAt,
+    hostCount: run.hostIds.size,
+  };
+}
+
+function hostRunForSocket(socket) {
+  const runCode = socket.data.runCode;
+  if (!runCode || !socket.rooms.has(hostRoom(runCode))) return null;
+  return runs.get(runCode) || null;
+}
+
+function emitDeviceLog(device, payload = {}) {
+  if (!device?.runCode) return;
+  io.to(hostRoom(device.runCode)).emit('device-log', {
+    deviceId: device.id,
+    deviceLabel: device.label,
+    level: typeof payload.level === 'string' ? payload.level : 'LOG',
+    message: typeof payload.message === 'string' ? payload.message : String(payload.message ?? ''),
+    source: typeof payload.source === 'string' ? payload.source : 'pixelpeek',
+    line: Number.isFinite(payload.line) ? payload.line : 0,
+    url: typeof payload.url === 'string' ? payload.url : device.currentUrl || '',
+    kind: typeof payload.kind === 'string' ? payload.kind : 'device',
+    ts: Date.now(),
+  });
 }
 
 io.on('connection', (socket) => {
-  socket.on('register-host', () => {
-    socket.join('hosts');
-    socket.emit('device-list', snapshot());
+  socket.on('register-host', ({ runCode } = {}, ack) => {
+    const run = createRun(runCode);
+    joinHostRun(socket, run);
+    const payload = runPayload(run);
+    socket.emit('run-info', payload);
+    socket.emit('device-list', snapshot(run.code));
+    if (typeof ack === 'function') ack({ ok: true, run: payload });
   });
 
-  socket.on('register-client', (info = {}) => {
+  socket.on('create-run', (_payload = {}, ack) => {
+    const run = createRun();
+    joinHostRun(socket, run);
+    const payload = runPayload(run);
+    socket.emit('run-info', payload);
+    socket.emit('device-list', snapshot(run.code));
+    if (typeof ack === 'function') ack({ ok: true, run: payload });
+  });
+
+  socket.on('register-client', (info = {}, ack) => {
+    const previousDevice = devices.get(socket.id);
+    if (previousDevice) {
+      devices.delete(socket.id);
+      broadcastDeviceList(previousDevice.runCode);
+    }
+
+    const run = resolveClientRun(info.runCode);
+    if (!run) {
+      const reason = normalizeRunCode(info.runCode) ? 'run code not found' : 'run code required';
+      socket.emit('join-failed', { reason });
+      if (typeof ack === 'function') ack({ ok: false, reason });
+      return;
+    }
+
     socket.join('clients');
+    socket.data.role = 'client';
+    socket.data.runCode = run.code;
     devices.set(socket.id, {
       id: socket.id,
+      runCode: run.code,
       label: info.label || 'unnamed device',
       width: info.width ?? 0,
       height: info.height ?? 0,
@@ -115,13 +529,15 @@ io.on('connection', (socket) => {
       currentUrl: null,
       connectedAt: Date.now(),
     });
-    broadcastDeviceList();
+    socket.emit('joined-run', runPayload(run));
+    if (typeof ack === 'function') ack({ ok: true, run: runPayload(run) });
+    broadcastDeviceList(run.code);
 
-    if (lastBroadcastUrl) {
+    if (run.lastBroadcastUrl) {
       const device = devices.get(socket.id);
-      if (device) device.currentUrl = lastBroadcastUrl;
-      socket.emit('load-url', { url: lastBroadcastUrl });
-      broadcastDeviceList();
+      if (device) device.currentUrl = run.lastBroadcastUrl;
+      socket.emit('load-url', { url: run.lastBroadcastUrl });
+      broadcastDeviceList(run.code);
     }
   });
 
@@ -130,34 +546,47 @@ io.on('connection', (socket) => {
     if (!device) return;
     device.width = width;
     device.height = height;
-    broadcastDeviceList();
+    broadcastDeviceList(device.runCode);
   });
 
   socket.on('load-url', ({ url, targetId }, ack) => {
+    const run = hostRunForSocket(socket);
+    if (!run) {
+      if (typeof ack === 'function') ack({ ok: false, delivered: 0, reason: 'host run not registered' });
+      return;
+    }
     if (typeof url !== 'string' || !url) {
       if (typeof ack === 'function') ack({ ok: false, delivered: 0, reason: 'invalid url' });
       return;
     }
-    const recipients = targetId ? [targetId] : Array.from(devices.keys());
+    const recipients = targetId ? [targetId] : snapshot(run.code).map((device) => device.id);
     let delivered = 0;
     for (const id of recipients) {
       const device = devices.get(id);
-      if (!device) continue;
+      if (!device || device.runCode !== run.code) continue;
       device.currentUrl = url;
       io.to(id).emit('load-url', { url });
+      emitDeviceLog(device, {
+        level: 'TIP',
+        message: `URL pushed: ${url}`,
+        source: 'host',
+        url,
+        kind: 'url-session-start',
+      });
       delivered++;
     }
-    if (!targetId) lastBroadcastUrl = url;
-    broadcastDeviceList();
+    if (!targetId) run.lastBroadcastUrl = url;
+    broadcastDeviceList(run.code);
     if (typeof ack === 'function') ack({ ok: true, delivered, targetId: targetId || null });
   });
 
   socket.on('capture-screenshots', async ({ url: override } = {}, ack) => {
-    if (!socket.rooms.has('hosts')) {
+    const run = hostRunForSocket(socket);
+    if (!run) {
       if (typeof ack === 'function') ack({ ok: false, reason: 'only host can capture' });
       return;
     }
-    const targets = Array.from(devices.values()).filter(
+    const targets = snapshot(run.code).filter(
       (d) => (override || d.currentUrl) && d.width > 0 && d.height > 0,
     );
     if (targets.length === 0) {
@@ -166,7 +595,7 @@ io.on('connection', (socket) => {
     }
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const sessionDir = join(SCREENSHOTS_DIR, stamp);
-    io.to('hosts').emit('capture-started', { targetCount: targets.length, stamp });
+    io.to(hostRoom(run.code)).emit('capture-started', { targetCount: targets.length, stamp });
 
     let okCount = 0;
     let errCount = 0;
@@ -181,16 +610,11 @@ io.on('connection', (socket) => {
           let filename;
           let source;
           if (live && Date.now() - live.ts < FRAME_TTL_MS) {
-            // Use the device's actual on-screen state from the active share stream.
-            // Preserves scroll position, opened menus, consent dialogs that the user
-            // already dismissed, etc.
             filename = `${String(d.label || 'device').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}-${d.width}x${d.height}.jpg`;
             await mkdir(sessionDir, { recursive: true });
-            await writeFile(join(sessionDir, filename), live.buffer);
+            await writeFile(join(sessionDir, filename), Buffer.from(live.base64, 'base64'));
             source = 'live';
           } else {
-            // No active share — fall back to a fresh Playwright render at the
-            // device's reported viewport.
             const result = await captureDevice({
               url: targetUrl,
               width: d.width,
@@ -202,7 +626,7 @@ io.on('connection', (socket) => {
             source = 'fresh';
           }
           okCount++;
-          io.to('hosts').emit('screenshot-captured', {
+          io.to(hostRoom(run.code)).emit('screenshot-captured', {
             id: d.id,
             label: d.label,
             width: d.width,
@@ -214,7 +638,7 @@ io.on('connection', (socket) => {
           });
         } catch (err) {
           errCount++;
-          io.to('hosts').emit('screenshot-captured', {
+          io.to(hostRoom(run.code)).emit('screenshot-captured', {
             id: d.id,
             label: d.label,
             width: d.width,
@@ -227,13 +651,11 @@ io.on('connection', (socket) => {
       }),
     );
 
-    if (typeof ack === 'function') {
-      ack({ ok: true, captured: okCount, errors: errCount });
-    }
+    if (typeof ack === 'function') ack({ ok: true, captured: okCount, errors: errCount });
   });
 
   socket.on('audit-screenshot', async ({ path: shotPath, url, width, height, label } = {}, ack) => {
-    if (!socket.rooms.has('hosts')) {
+    if (!hostRunForSocket(socket)) {
       if (typeof ack === 'function') ack({ ok: false, reason: 'only host can audit' });
       return;
     }
@@ -248,77 +670,82 @@ io.on('connection', (socket) => {
     }
     const filepath = join(SCREENSHOTS_DIR, relative);
     try {
-      const audit = await auditScreenshot({
-        imagePath: filepath,
-        url,
-        width,
-        height,
-        label,
-      });
+      const audit = await auditScreenshot({ imagePath: filepath, url, width, height, label });
       if (typeof ack === 'function') ack({ ok: true, audit });
     } catch (err) {
       if (typeof ack === 'function') ack({ ok: false, reason: err.message });
     }
   });
 
-  // WebRTC screen-share signaling — server is a dumb relay between specific sockets.
-  // host -> client events are gated to the 'hosts' room; client -> host events aren't.
   function relayShare(event, requireHost) {
     socket.on(event, ({ targetId, ...rest } = {}) => {
-      if (requireHost && !socket.rooms.has('hosts')) return;
       if (!targetId || !io.sockets.sockets.get(targetId)) return;
+      if (requireHost) {
+        const run = hostRunForSocket(socket);
+        const device = devices.get(targetId);
+        if (!run || !device || device.runCode !== run.code) return;
+      } else {
+        const device = devices.get(socket.id);
+        const target = io.sockets.sockets.get(targetId);
+        if (!device || !target || target.data.runCode !== device.runCode) return;
+      }
       io.to(targetId).emit(event, { fromId: socket.id, ...rest });
     });
   }
   relayShare('share-request', true);
+  relayShare('share-profile', true);
   relayShare('share-stop', true);
-  relayShare('share-control', true);   // host -> device: scroll/click commands
+  relayShare('share-control', true);
   relayShare('share-failed', false);
   relayShare('share-ended', false);
 
-  // share-frame is relayed AND buffered server-side so "Capture now" can use
-  // the device's current on-screen state instead of re-fetching the URL fresh.
   let framesSeen = 0;
   socket.on('share-frame', ({ targetId, frame, width, height } = {}) => {
+    const device = devices.get(socket.id);
+    if (!device) return;
     if (frame) {
       try {
         latestFrames.set(socket.id, {
-          buffer: Buffer.from(frame, 'base64'),
+          base64: frame,
           width: Number(width) || 0,
           height: Number(height) || 0,
           ts: Date.now(),
         });
         framesSeen++;
         if (framesSeen === 1 || framesSeen % 50 === 0) {
-          console.log(`[share-frame] buffered for ${socket.id} (${framesSeen} frames, ${latestFrames.get(socket.id).buffer.length} bytes)`);
+          console.log(`[share-frame] buffered for ${socket.id} (${framesSeen} frames, ${frame.length} base64 chars)`);
         }
       } catch (err) {
         console.error('[share-frame] buffer failed:', err.message);
       }
     }
-    if (!targetId || !io.sockets.sockets.get(targetId)) return;
+    const target = targetId ? io.sockets.sockets.get(targetId) : null;
+    if (!target || target.data.runCode !== device.runCode) return;
     io.to(targetId).emit('share-frame', { fromId: socket.id, frame, width, height });
   });
 
-  // Forward each device's web console output to all hosts. Hosts use this to debug
-  // what's happening inside the page running on the device.
   socket.on('console-log', (payload = {}) => {
     const device = devices.get(socket.id);
     if (!device) return;
-    io.to('hosts').emit('console-log', {
-      deviceId: socket.id,
-      deviceLabel: device.label,
-      level: typeof payload.level === 'string' ? payload.level : 'LOG',
-      message: typeof payload.message === 'string' ? payload.message : String(payload.message ?? ''),
-      source: typeof payload.source === 'string' ? payload.source : '',
-      line: Number.isFinite(payload.line) ? payload.line : 0,
-      ts: Date.now(),
-    });
+    emitDeviceLog(device, { ...payload, kind: payload.kind || 'console' });
+  });
+
+  socket.on('device-log', (payload = {}) => {
+    const device = devices.get(socket.id);
+    if (!device) return;
+    emitDeviceLog(device, payload);
   });
 
   socket.on('disconnect', () => {
     latestFrames.delete(socket.id);
-    if (devices.delete(socket.id)) broadcastDeviceList();
+    const device = devices.get(socket.id);
+    if (device) {
+      devices.delete(socket.id);
+      broadcastDeviceList(device.runCode);
+    }
+    const runCode = socket.data.runCode;
+    const run = runCode ? runs.get(runCode) : null;
+    if (run && socket.data.role === 'host') run.hostIds.delete(socket.id);
   });
 });
 
@@ -337,6 +764,7 @@ httpServer.on('error', (err) => {
   }
   process.exit(1);
 });
+
 httpsServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\nHTTPS port ${HTTPS_PORT} is already in use. Set HTTPS_PORT=<n>\n`);
@@ -351,6 +779,7 @@ function maybePrintBanner() {
   listeningCount++;
   if (listeningCount < 2) return;
   console.log('\nResponsive testing tool running.');
+  console.log(`  Launcher:        http://localhost:${PORT}/`);
   console.log(`  Host dashboard:  http://localhost:${PORT}/host`);
   console.log(`  Client device:   http://localhost:${PORT}/client`);
   console.log(`  (HTTPS)          https://localhost:${HTTPS_PORT}/host`);
@@ -362,7 +791,7 @@ function maybePrintBanner() {
       console.log(`  https://${address}:${HTTPS_PORT}/client   (${name}, required for screen share)`);
     }
     console.log('\nNote: phones must use the https:// URL for screen share to work.');
-    console.log('On first visit, accept the self-signed cert warning ("Advanced → Proceed").');
+    console.log('On first visit, accept the self-signed cert warning ("Advanced -> Proceed").');
   }
   console.log('');
 }

@@ -15,6 +15,9 @@ import com.flashbacklabs.pixelpeek.net.PixelpeekViewModel
 import com.flashbacklabs.pixelpeek.net.ShareState
 import com.flashbacklabs.pixelpeek.ui.PixelpeekApp
 import com.flashbacklabs.pixelpeek.ui.theme.PixelpeekTheme
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.launch
 
@@ -52,8 +55,28 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             PixelpeekTheme {
-                PixelpeekApp(viewModel)
+                PixelpeekApp(
+                    viewModel = viewModel,
+                    onScanQr = ::startQrScan,
+                )
             }
         }
+    }
+
+    private fun startQrScan() {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .build()
+        GmsBarcodeScanning.getClient(this, options)
+            .startScan()
+            .addOnSuccessListener { barcode ->
+                viewModel.applyScannedConnection(barcode.rawValue.orEmpty())
+            }
+            .addOnCanceledListener {
+                viewModel.onQrScanCancelled()
+            }
+            .addOnFailureListener { error ->
+                viewModel.onQrScanFailed(error.localizedMessage ?: "scanner unavailable")
+            }
     }
 }

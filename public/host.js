@@ -7,6 +7,7 @@ const deviceListEl = document.getElementById('device-list');
 const deviceCountEl = document.getElementById('device-count');
 const logEl = document.getElementById('log');
 const captureBtn = document.getElementById('capture-btn');
+const shareAllBtn = document.getElementById('share-all-btn');
 const captureStatus = document.getElementById('capture-status');
 const galleryEl = document.getElementById('gallery');
 const screenshotCountEl = document.getElementById('screenshot-count');
@@ -14,6 +15,20 @@ const clearGalleryBtn = document.getElementById('clear-gallery-btn');
 const statDevicesEl = document.getElementById('stat-devices');
 const statShotsEl = document.getElementById('stat-shots');
 const statLastEl = document.getElementById('stat-last');
+const runCodeEl = document.getElementById('run-code');
+const runCodeModalEl = document.getElementById('run-code-modal');
+const connectQrInline = document.getElementById('connect-qr-inline');
+const connectQrModal = document.getElementById('connect-qr-modal');
+const connectLinkSelect = document.getElementById('connect-link-select');
+const connectLinkInput = document.getElementById('connect-link-input');
+const copyCodeBtn = document.getElementById('copy-code-btn');
+const copyCodeModalBtn = document.getElementById('copy-code-modal-btn');
+const copyLinkBtn = document.getElementById('copy-link-btn');
+const copyLinkModalBtn = document.getElementById('copy-link-modal-btn');
+const showConnectBtn = document.getElementById('show-connect-btn');
+const newRunBtn = document.getElementById('new-run-btn');
+const connectModal = document.getElementById('connect-modal');
+const connectCloseBtn = document.getElementById('connect-close');
 
 const shareModal = document.getElementById('share-modal');
 const shareImage = document.getElementById('share-image');
@@ -33,12 +48,120 @@ const logsClearBtn = document.getElementById('logs-clear');
 
 const screenshots = [];
 let currentDevices = [];
+let activeRun = null;
+let connectOptions = [];
+let selectedConnectUrl = '';
+let didShowInitialConnect = false;
 
-// Live state per device. Updated by socket events, read by renderDevices and the detail modal.
-const liveFrames = new Map();       // deviceId -> latest base64 jpeg
-const deviceLogs = new Map();       // deviceId -> array of {ts,level,message,source,line}
-const cardImageEls = new Map();     // deviceId -> the <img> currently in the device card
+const liveFrames = new Map();
+const cardFramePaintedAt = new Map();
+const deviceLogs = new Map();
+const cardImageEls = new Map();
 const MAX_LOGS_PER_DEVICE = 200;
+const CARD_PREVIEW_PAINT_INTERVAL_MS = 1200;
+
+function getRunCodeFromUrl() {
+  return new URLSearchParams(window.location.search).get('run') || '';
+}
+
+function updateHostUrl(runCode) {
+  const url = new URL(window.location.href);
+  url.pathname = '/host';
+  url.searchParams.set('run', runCode);
+  if (!url.hash) url.hash = '#connect';
+  window.history.replaceState({}, '', url);
+}
+
+function qrSrcFor(url) {
+  return `/api/qr?data=${encodeURIComponent(url)}`;
+}
+
+function setRunCode(code) {
+  const value = code || '------';
+  if (runCodeEl) runCodeEl.textContent = value;
+  if (runCodeModalEl) runCodeModalEl.textContent = value;
+}
+
+function selectedConnectOption() {
+  return connectOptions.find((option) => option.url === selectedConnectUrl) || connectOptions[0] || null;
+}
+
+function refreshQr() {
+  const option = selectedConnectOption();
+  selectedConnectUrl = option?.url || '';
+  if (connectLinkInput) connectLinkInput.value = selectedConnectUrl;
+  const src = selectedConnectUrl ? qrSrcFor(selectedConnectUrl) : '';
+  if (connectQrInline) {
+    connectQrInline.src = src;
+    connectQrInline.hidden = !src;
+  }
+  if (connectQrModal) {
+    connectQrModal.src = src;
+    connectQrModal.hidden = !src;
+  }
+}
+
+async function loadConnectOptions(runCode) {
+  if (!runCode) return;
+  const res = await fetch(`/api/connect-options?runCode=${encodeURIComponent(runCode)}`);
+  if (!res.ok) throw new Error('failed to load connection links');
+  const data = await res.json();
+  connectOptions = data.options || [];
+  const recommended = connectOptions.find((option) => option.recommended) || connectOptions[0] || null;
+  selectedConnectUrl = recommended?.url || '';
+  if (connectLinkSelect) {
+    connectLinkSelect.innerHTML = '';
+    for (const option of connectOptions) {
+      const opt = document.createElement('option');
+      opt.value = option.url;
+      opt.textContent = `${option.label} - ${option.detail}`;
+      connectLinkSelect.appendChild(opt);
+    }
+    connectLinkSelect.value = selectedConnectUrl;
+  }
+  refreshQr();
+}
+
+async function copyText(value, label) {
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    log(`${label} copied.`);
+  } catch {
+    log(`Copy failed. ${label}: ${value}`);
+  }
+}
+
+function showConnectModal() {
+  if (connectModal) connectModal.hidden = false;
+}
+
+function hideConnectModal() {
+  if (connectModal) connectModal.hidden = true;
+}
+
+function registerHost(runCode) {
+  socket.emit('register-host', { runCode }, async (ack) => {
+    if (!ack?.ok || !ack.run?.code) {
+      log('Host run setup failed.');
+      return;
+    }
+    activeRun = ack.run;
+    localStorage.setItem('pixelpeek-host-run', activeRun.code);
+    updateHostUrl(activeRun.code);
+    setRunCode(activeRun.code);
+    try {
+      await loadConnectOptions(activeRun.code);
+      if (!didShowInitialConnect || window.location.hash === '#connect') {
+        didShowInitialConnect = true;
+        showConnectModal();
+      }
+    } catch (err) {
+      log(`Connection panel failed: ${err.message}`);
+    }
+    log(`Host run ready: ${activeRun.code}`);
+  });
+}
 
 function aspectRatioLabel(w, h) {
   if (!w || !h) return '';
@@ -56,7 +179,10 @@ function aspectRatioLabel(w, h) {
   const g = gcd(w, h);
   return `${w / g}:${h / g}`;
 }
-function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+
+function gcd(a, b) {
+  return b ? gcd(b, a % b) : a;
+}
 
 function getLatestShotForDevice(id) {
   for (const s of screenshots) {
@@ -79,7 +205,8 @@ function setStatus(state) {
 
 socket.on('connect', () => {
   setStatus('connected');
-  socket.emit('register-host');
+  const runCode = getRunCodeFromUrl() || localStorage.getItem('pixelpeek-host-run') || '';
+  registerHost(runCode);
   log('Connected to server.');
 });
 
@@ -97,13 +224,14 @@ function renderDevices() {
   const devices = currentDevices;
   deviceCountEl.textContent = String(devices.length);
   if (statDevicesEl) statDevicesEl.textContent = String(devices.length);
+  if (shareAllBtn) shareAllBtn.disabled = devices.length === 0;
 
   const previous = targetSelect.value;
   targetSelect.innerHTML = '<option value="">All connected devices</option>';
   for (const d of devices) {
     const opt = document.createElement('option');
     opt.value = d.id;
-    opt.textContent = `${d.label} — ${d.width}×${d.height}`;
+    opt.textContent = `${d.label} - ${d.width}x${d.height}`;
     targetSelect.appendChild(opt);
   }
   targetSelect.value = previous;
@@ -124,9 +252,7 @@ function renderDevices() {
 
     const preview = document.createElement('div');
     preview.className = 'device-preview';
-    if (d.width && d.height) {
-      preview.style.aspectRatio = `${d.width} / ${d.height}`;
-    }
+    if (d.width && d.height) preview.style.aspectRatio = `${d.width} / ${d.height}`;
 
     const live = liveFrames.get(d.id);
     const latest = getLatestShotForDevice(d.id);
@@ -167,7 +293,7 @@ function renderDevices() {
     lbl.textContent = d.label;
     const dims = document.createElement('span');
     dims.className = 'dims';
-    dims.textContent = `${d.width}×${d.height}`;
+    dims.textContent = `${d.width}x${d.height}`;
     top.appendChild(lbl);
     top.appendChild(dims);
     const ua = document.createElement('p');
@@ -175,7 +301,7 @@ function renderDevices() {
     ua.textContent = d.userAgent || '';
     const url = document.createElement('p');
     url.className = 'url';
-    url.textContent = d.currentUrl ? `→ ${d.currentUrl}` : 'idle';
+    url.textContent = d.currentUrl ? `-> ${d.currentUrl}` : 'idle';
 
     info.appendChild(top);
     info.appendChild(ua);
@@ -243,7 +369,7 @@ function renderAudit(container, audit) {
 
 function runAudit(shot, btn, container) {
   btn.disabled = true;
-  btn.textContent = 'Auditing…';
+  btn.textContent = 'Auditing...';
   container.classList.add('loading');
   socket.emit(
     'audit-screenshot',
@@ -296,7 +422,7 @@ function renderGallery() {
       const lbl = document.createElement('strong');
       lbl.textContent = s.label;
       const dim = document.createElement('span');
-      dim.textContent = `${s.width}×${s.height}`;
+      dim.textContent = `${s.width}x${s.height}`;
       meta.appendChild(lbl);
       meta.appendChild(dim);
       const errDiv = document.createElement('div');
@@ -322,7 +448,7 @@ function renderGallery() {
       const lbl = document.createElement('strong');
       lbl.textContent = s.label;
       const dim = document.createElement('span');
-      dim.textContent = `${s.width}×${s.height}`;
+      dim.textContent = `${s.width}x${s.height}`;
       meta.appendChild(lbl);
       meta.appendChild(dim);
       const urlDiv = document.createElement('div');
@@ -348,7 +474,7 @@ function renderGallery() {
 
 captureBtn.addEventListener('click', () => {
   captureBtn.disabled = true;
-  captureStatus.textContent = 'capturing…';
+  captureStatus.textContent = 'capturing...';
   socket.emit('capture-screenshots', {}, (ack) => {
     captureBtn.disabled = false;
     if (!ack?.ok) {
@@ -363,13 +489,58 @@ captureBtn.addEventListener('click', () => {
   });
 });
 
+shareAllBtn?.addEventListener('click', () => {
+  const targets = currentDevices.filter((device) => !activeShareIds.has(device.id));
+  if (targets.length === 0) {
+    captureStatus.textContent = currentDevices.length ? 'all devices already sharing' : 'no devices connected';
+    return;
+  }
+  for (const device of targets) startSharingForDevice(device.id);
+  captureStatus.textContent = `share requested on ${targets.length} device${targets.length === 1 ? '' : 's'}`;
+});
+
 clearGalleryBtn.addEventListener('click', () => {
   screenshots.length = 0;
   renderGallery();
 });
 
+connectLinkSelect?.addEventListener('change', () => {
+  selectedConnectUrl = connectLinkSelect.value;
+  refreshQr();
+});
+copyCodeBtn?.addEventListener('click', () => copyText(activeRun?.code, 'Run code'));
+copyCodeModalBtn?.addEventListener('click', () => copyText(activeRun?.code, 'Run code'));
+copyLinkBtn?.addEventListener('click', () => copyText(selectedConnectUrl, 'Client link'));
+copyLinkModalBtn?.addEventListener('click', () => copyText(selectedConnectUrl, 'Client link'));
+showConnectBtn?.addEventListener('click', showConnectModal);
+connectCloseBtn?.addEventListener('click', hideConnectModal);
+
+newRunBtn?.addEventListener('click', () => {
+  socket.emit('create-run', {}, async (ack) => {
+    if (!ack?.ok || !ack.run?.code) {
+      log('Could not create a new run.');
+      return;
+    }
+    activeRun = ack.run;
+    localStorage.setItem('pixelpeek-host-run', activeRun.code);
+    updateHostUrl(activeRun.code);
+    setRunCode(activeRun.code);
+    screenshots.length = 0;
+    liveFrames.clear();
+    deviceLogs.clear();
+    renderGallery();
+    try {
+      await loadConnectOptions(activeRun.code);
+      showConnectModal();
+    } catch (err) {
+      log(`Connection panel failed: ${err.message}`);
+    }
+    log(`New host run ready: ${activeRun.code}`);
+  });
+});
+
 socket.on('capture-started', ({ targetCount }) => {
-  log(`Capture started — ${targetCount} device${targetCount === 1 ? '' : 's'}`);
+  log(`Capture started - ${targetCount} device${targetCount === 1 ? '' : 's'}`);
 });
 
 socket.on('screenshot-captured', (shot) => {
@@ -383,9 +554,7 @@ urlForm.addEventListener('submit', (e) => {
   const url = urlInput.value.trim();
   if (!url) return;
   const targetId = targetSelect.value || null;
-  const targetLabel = targetId
-    ? targetSelect.options[targetSelect.selectedIndex].text
-    : 'all devices';
+  const targetLabel = targetId ? targetSelect.options[targetSelect.selectedIndex].text : 'all devices';
   socket.emit('load-url', { url, targetId }, (ack) => {
     if (!ack?.ok) {
       log(`Failed to send ${url}: ${ack?.reason || 'unknown error'}`);
@@ -393,24 +562,38 @@ urlForm.addEventListener('submit', (e) => {
     }
     const count = ack.delivered;
     if (count === 0) {
-      log(`Sent ${url} → ${targetLabel} — but 0 devices connected (URL will replay when a client joins)`);
+      log(`Sent ${url} -> ${targetLabel} - but 0 devices connected`);
     } else {
-      log(`Sent ${url} → ${targetLabel} (delivered to ${count} device${count === 1 ? '' : 's'})`);
+      log(`Sent ${url} -> ${targetLabel} (delivered to ${count} device${count === 1 ? '' : 's'})`);
     }
   });
 });
 
-// ---- device detail modal + screen share (Socket.IO JPEG streaming) ----
-// Multiple devices can share at the same time. The host tracks each independently;
-// the modal just inspects whichever device is currently open.
-
-let openDeviceId = null;                  // device whose detail modal is currently open
-const activeShareIds = new Set();         // device ids currently being live-shared
-const sharingDevices = new Map();         // deviceId -> cached device record
+let openDeviceId = null;
+const activeShareIds = new Set();
+const sharingDevices = new Map();
+const SHARE_PROFILES = {
+  preview: { mode: 'preview', fps: 3, maxFrameDim: 720, jpegQuality: 0.55 },
+  detail: { mode: 'detail', fps: 20, maxFrameDim: 1440, jpegQuality: 0.74 },
+};
 
 function setShareStatus(text, isError) {
   shareStatusEl.textContent = text || '';
   shareStatusEl.classList.toggle('error', !!isError);
+}
+
+function shareProfileForDevice(deviceId) {
+  const isVisibleDetail = openDeviceId === deviceId && shareModal && !shareModal.hidden;
+  return isVisibleDetail ? SHARE_PROFILES.detail : SHARE_PROFILES.preview;
+}
+
+function sendShareProfile(deviceId) {
+  if (!activeShareIds.has(deviceId)) return;
+  socket.emit('share-profile', { targetId: deviceId, profile: shareProfileForDevice(deviceId) });
+}
+
+function syncShareProfiles() {
+  for (const id of activeShareIds) sendShareProfile(id);
 }
 
 function updateShareBanner() {
@@ -445,7 +628,6 @@ function paintModalPreview() {
     sharePlaceholder.classList.add('hidden');
     return;
   }
-  // No live frame — fall back to latest screenshot
   const latest = getLatestShotForDevice(openDeviceId);
   if (latest) {
     shareImage.src = latest.path;
@@ -456,14 +638,14 @@ function paintModalPreview() {
   shareImage.removeAttribute('src');
   shareImage.classList.remove('active');
   sharePlaceholder.classList.remove('hidden');
-  sharePlaceholder.innerHTML = 'No preview yet — click <strong>Share screen</strong> to start streaming.';
+  sharePlaceholder.innerHTML = 'No preview yet - click <strong>Share screen</strong> to start streaming.';
 }
 
 function renderLogsForOpenDevice() {
   if (!openDeviceId) return;
   const logs = deviceLogs.get(openDeviceId) || [];
   if (logs.length === 0) {
-    logsListEl.innerHTML = '<div class="logs-empty">No console messages yet.</div>';
+    logsListEl.innerHTML = '<div class="logs-empty">No device logs for the current URL yet.</div>';
     return;
   }
   logsListEl.innerHTML = '';
@@ -481,7 +663,10 @@ function renderLogsForOpenDevice() {
     if (entry.source) {
       const src = document.createElement('div');
       src.className = 'log-src';
-      src.textContent = `${entry.source}:${entry.line || 0}`;
+      const parts = [entry.source];
+      if (entry.line) parts.push(String(entry.line));
+      if (entry.url) parts.push(entry.url);
+      src.textContent = parts.join('  ');
       body.appendChild(src);
     }
     row.appendChild(ts);
@@ -491,12 +676,31 @@ function renderLogsForOpenDevice() {
   logsListEl.scrollTop = logsListEl.scrollHeight;
 }
 
+function appendDeviceLog(entry) {
+  if (!entry || !entry.deviceId) return;
+  const resetSession = entry.kind === 'url-session-start';
+  const arr = resetSession ? [] : (deviceLogs.get(entry.deviceId) || []);
+  arr.push({
+    ts: entry.ts || Date.now(),
+    level: entry.level || 'LOG',
+    message: entry.message || '',
+    source: entry.source || '',
+    line: Number.isFinite(entry.line) ? entry.line : 0,
+    url: entry.url || '',
+    kind: entry.kind || 'device',
+  });
+  if (arr.length > MAX_LOGS_PER_DEVICE) arr.splice(0, arr.length - MAX_LOGS_PER_DEVICE);
+  deviceLogs.set(entry.deviceId, arr);
+  if (openDeviceId === entry.deviceId) renderLogsForOpenDevice();
+}
+
 function openDeviceDetail(device) {
   openDeviceId = device.id;
   shareTitle.textContent = device.label;
-  shareMetaEl.textContent = `${device.width}×${device.height}`;
+  shareMetaEl.textContent = `${device.width}x${device.height}`;
   setShareStatus('');
   shareModal.hidden = false;
+  syncShareProfiles();
   updateShareBanner();
   paintModalPreview();
   renderLogsForOpenDevice();
@@ -506,19 +710,18 @@ function openDeviceDetail(device) {
 function closeDeviceDetail() {
   shareModal.hidden = true;
   openDeviceId = null;
+  syncShareProfiles();
   updateShareBanner();
 }
 
 function startSharingForDevice(deviceId) {
   const device = currentDevices.find((d) => d.id === deviceId);
   if (!device) return;
-  if (activeShareIds.has(deviceId)) return; // already sharing
+  if (activeShareIds.has(deviceId)) return;
   activeShareIds.add(deviceId);
   sharingDevices.set(deviceId, device);
-  if (openDeviceId === deviceId) {
-    setShareStatus('Asking device to share — tap Allow on the device.');
-  }
-  socket.emit('share-request', { targetId: deviceId }, () => {});
+  if (openDeviceId === deviceId) setShareStatus('Asking device to share - tap Allow on the device.');
+  socket.emit('share-request', { targetId: deviceId, profile: shareProfileForDevice(deviceId) }, () => {});
   log(`Requesting screen share from ${device.label}`);
   updateShareBanner();
   refreshShareButtons();
@@ -528,12 +731,13 @@ function stopSharingForDevice(deviceId) {
   if (!activeShareIds.has(deviceId)) return;
   socket.emit('share-stop', { targetId: deviceId });
   const label = sharingDevices.get(deviceId)?.label || deviceId;
-  log(`Stopped sharing — ${label}`);
+  log(`Stopped sharing - ${label}`);
   handleShareStopLocally(deviceId);
 }
 
 function handleShareStopLocally(deviceId) {
   liveFrames.delete(deviceId);
+  cardFramePaintedAt.delete(deviceId);
   activeShareIds.delete(deviceId);
   sharingDevices.delete(deviceId);
 
@@ -544,7 +748,10 @@ function handleShareStopLocally(deviceId) {
     if (img) {
       const latest = getLatestShotForDevice(deviceId);
       if (latest) img.src = latest.path;
-      else { img.removeAttribute('src'); renderDevices(); }
+      else {
+        img.removeAttribute('src');
+        renderDevices();
+      }
     }
   }
   if (openDeviceId === deviceId) {
@@ -562,11 +769,9 @@ shareStopBtn.addEventListener('click', () => {
   if (openDeviceId) stopSharingForDevice(openDeviceId);
 });
 shareBannerStop.addEventListener('click', () => {
-  // Stop every active share
   for (const id of Array.from(activeShareIds)) stopSharingForDevice(id);
 });
 shareBannerView.addEventListener('click', () => {
-  // Open the first sharing device's detail popup
   const firstId = activeShareIds.values().next().value;
   if (!firstId) return;
   const device = sharingDevices.get(firstId) || currentDevices.find((d) => d.id === firstId);
@@ -580,39 +785,42 @@ logsClearBtn.addEventListener('click', () => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !shareModal.hidden) closeDeviceDetail();
+  if (e.key === 'Escape' && connectModal && !connectModal.hidden) hideConnectModal();
 });
 
 socket.on('share-frame', ({ fromId, frame, width, height }) => {
   if (!frame) return;
   liveFrames.set(fromId, frame);
 
-  // Frame arrived → this device is sharing. Make sure it's tracked.
   if (!activeShareIds.has(fromId)) {
     activeShareIds.add(fromId);
     const dev = currentDevices.find((d) => d.id === fromId);
     if (dev) sharingDevices.set(fromId, dev);
     updateShareBanner();
+    sendShareProfile(fromId);
   }
 
-  // Update the device card preview live (no re-render)
   const card = deviceListEl.querySelector(`.device-card[data-id="${fromId}"]`);
   if (card) {
     card.classList.add('is-sharing');
     let img = cardImageEls.get(fromId);
     if (!img) {
-      // The card was rendered with no preview; do a full re-render so the img is created
       renderDevices();
       img = cardImageEls.get(fromId);
     }
-    if (img) img.src = `data:image/jpeg;base64,${frame}`;
+    const now = performance.now();
+    const lastPaint = cardFramePaintedAt.get(fromId) || 0;
+    if (img && (!cardFramePaintedAt.has(fromId) || now - lastPaint >= CARD_PREVIEW_PAINT_INTERVAL_MS)) {
+      img.src = `data:image/jpeg;base64,${frame}`;
+      cardFramePaintedAt.set(fromId, now);
+    }
   }
 
-  // If the detail modal is open for this device, update it
   if (openDeviceId === fromId) {
     shareImage.src = `data:image/jpeg;base64,${frame}`;
     shareImage.classList.add('active');
     sharePlaceholder.classList.add('hidden');
-    if (width && height) shareMetaEl.textContent = `${width}×${height}`;
+    if (width && height) shareMetaEl.textContent = `${width}x${height}`;
     setShareStatus('');
     refreshShareButtons();
   }
@@ -621,9 +829,7 @@ socket.on('share-frame', ({ fromId, frame, width, height }) => {
 socket.on('share-failed', ({ fromId, reason }) => {
   const text = reasonText(reason);
   log(`Share failed (${fromId}): ${text}`);
-  if (openDeviceId === fromId) {
-    setShareStatus(text, true);
-  }
+  if (openDeviceId === fromId) setShareStatus(text, true);
   handleShareStopLocally(fromId);
 });
 
@@ -632,10 +838,6 @@ socket.on('share-ended', ({ fromId }) => {
   if (openDeviceId === fromId) setShareStatus('Sharing ended by device.');
   handleShareStopLocally(fromId);
 });
-
-// ---- remote scroll control ----
-// While viewing a sharing device's stream, scrolling/dragging over the preview image
-// is forwarded to the device so the host can scroll the page on the device.
 
 function sendScroll(deltaX, deltaY) {
   if (!openDeviceId || !activeShareIds.has(openDeviceId)) return;
@@ -665,7 +867,6 @@ shareImage.addEventListener('wheel', (e) => {
   sendScroll(e.deltaX, e.deltaY);
 }, { passive: false });
 
-// Tap = quick mousedown+mouseup with no drag. Drag = scroll.
 const DRAG_THRESHOLD_PX = 5;
 let dragState = null;
 
@@ -713,14 +914,8 @@ window.addEventListener('mouseup', (e) => {
 
 shareImage.style.cursor = 'grab';
 
-socket.on('console-log', (entry) => {
-  if (!entry || !entry.deviceId) return;
-  const arr = deviceLogs.get(entry.deviceId) || [];
-  arr.push(entry);
-  if (arr.length > MAX_LOGS_PER_DEVICE) arr.splice(0, arr.length - MAX_LOGS_PER_DEVICE);
-  deviceLogs.set(entry.deviceId, arr);
-  if (openDeviceId === entry.deviceId) renderLogsForOpenDevice();
-});
+socket.on('console-log', (entry) => appendDeviceLog({ ...entry, kind: entry?.kind || 'console' }));
+socket.on('device-log', appendDeviceLog);
 
 function reasonText(reason) {
   if (reason === 'denied') return 'User denied screen sharing on the device.';

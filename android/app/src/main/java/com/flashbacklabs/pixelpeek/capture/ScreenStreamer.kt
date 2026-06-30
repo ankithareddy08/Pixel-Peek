@@ -16,10 +16,6 @@ import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Captures the device screen via MediaProjection and emits each frame as a base64-encoded JPEG.
- * Throttles to ~10 FPS to keep bandwidth and CPU reasonable.
- */
 class ScreenStreamer(
     private val context: Context,
     private val resultCode: Int,
@@ -27,9 +23,28 @@ class ScreenStreamer(
     private val width: Int,
     private val height: Int,
     private val dpi: Int,
-    private val onFrame: (String) -> Unit,
+    profile: Profile,
+    private val onFrame: (String, Int, Int) -> Unit,
     private val onStopped: () -> Unit,
 ) {
+    data class Profile(
+        val fps: Int = 8,
+        val maxFrameDim: Int = 720,
+        val jpegQuality: Int = 68,
+    ) {
+        fun normalized(): Profile = copy(
+            fps = fps.coerceIn(2, 30),
+            maxFrameDim = maxFrameDim.coerceIn(320, 1440),
+            jpegQuality = jpegQuality.coerceIn(35, 90),
+        )
+    }
+
+    private data class EncodedFrame(
+        val base64: String,
+        val width: Int,
+        val height: Int,
+    )
+
     private val thread = HandlerThread("PixelpeekStreamer").also { it.start() }
     private val handler = Handler(thread.looper)
     private var projection: MediaProjection? = null
@@ -37,7 +52,9 @@ class ScreenStreamer(
     private var imageReader: ImageReader? = null
     private val stopped = AtomicBoolean(false)
     private var lastFrameAt = 0L
-    private val minFrameIntervalMs = 100L // ~10 FPS cap
+
+    @Volatile
+    private var activeProfile: Profile = profile.normalized()
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -67,8 +84,14 @@ class ScreenStreamer(
         )
     }
 
+    fun updateProfile(profile: Profile) {
+        activeProfile = profile.normalized()
+    }
+
     private fun onImageAvailable(reader: ImageReader) {
         if (stopped.get()) return
+        val profile = activeProfile
+        val minFrameIntervalMs = (1000L / profile.fps.coerceAtLeast(1)).coerceAtLeast(33L)
         val now = System.currentTimeMillis()
         if (now - lastFrameAt < minFrameIntervalMs) {
             runCatching { reader.acquireLatestImage()?.close() }
@@ -77,16 +100,16 @@ class ScreenStreamer(
         val image = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return
         lastFrameAt = now
         try {
-            val base64 = imageToJpegBase64(image)
-            onFrame(base64)
+            val frame = imageToJpegBase64(image, profile)
+            onFrame(frame.base64, frame.width, frame.height)
         } catch (_: Throwable) {
-            // skip bad frame
+            // Skip malformed frames; the next ImageReader callback will retry.
         } finally {
             runCatching { image.close() }
         }
     }
 
-    private fun imageToJpegBase64(image: Image): String {
+    private fun imageToJpegBase64(image: Image, profile: Profile): EncodedFrame {
         val plane = image.planes[0]
         val buffer = plane.buffer
         val pixelStride = plane.pixelStride
@@ -98,11 +121,26 @@ class ScreenStreamer(
         bitmap.copyPixelsFromBuffer(buffer)
 
         val cropped = if (rowPadding == 0) bitmap else Bitmap.createBitmap(bitmap, 0, 0, width, height)
-        val out = ByteArrayOutputStream(64 * 1024)
-        cropped.compress(Bitmap.CompressFormat.JPEG, 45, out)
+        val maxDim = maxOf(width, height).coerceAtLeast(1)
+        val scale = (profile.maxFrameDim.toFloat() / maxDim).coerceAtMost(1f)
+        val outputW = (width * scale).toInt().coerceAtLeast(1)
+        val outputH = (height * scale).toInt().coerceAtLeast(1)
+        val output = if (scale < 0.999f) {
+            Bitmap.createScaledBitmap(cropped, outputW, outputH, true)
+        } else {
+            cropped
+        }
+
+        val out = ByteArrayOutputStream(128 * 1024)
+        output.compress(Bitmap.CompressFormat.JPEG, profile.jpegQuality, out)
+        if (output !== cropped) output.recycle()
         if (cropped !== bitmap) cropped.recycle()
         bitmap.recycle()
-        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        return EncodedFrame(
+            base64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP),
+            width = outputW,
+            height = outputH,
+        )
     }
 
     fun stop() {

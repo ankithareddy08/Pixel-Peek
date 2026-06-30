@@ -79,4 +79,5 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.socketio.client)
     implementation(libs.webrtc)
+    implementation(libs.play.services.code.scanner)
 }

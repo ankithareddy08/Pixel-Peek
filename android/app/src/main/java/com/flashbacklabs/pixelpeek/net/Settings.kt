@@ -13,6 +13,7 @@ private val Context.dataStore by preferencesDataStore(name = "pixelpeek_prefs")
 object PixelpeekPrefs {
     private val SERVER_URL = stringPreferencesKey("server_url")
     private val DEVICE_LABEL = stringPreferencesKey("device_label")
+    private val RUN_CODE = stringPreferencesKey("run_code")
 
     fun serverUrl(context: Context): Flow<String> =
         context.dataStore.data.map { it[SERVER_URL] ?: DEFAULT_SERVER }
@@ -20,12 +21,19 @@ object PixelpeekPrefs {
     fun deviceLabel(context: Context): Flow<String> =
         context.dataStore.data.map { it[DEVICE_LABEL] ?: "" }
 
+    fun runCode(context: Context): Flow<String> =
+        context.dataStore.data.map { it[RUN_CODE] ?: "" }
+
     suspend fun setServerUrl(context: Context, value: String) {
         context.dataStore.edit { it[SERVER_URL] = value }
     }
 
     suspend fun setDeviceLabel(context: Context, value: String) {
         context.dataStore.edit { it[DEVICE_LABEL] = value }
+    }
+
+    suspend fun setRunCode(context: Context, value: String) {
+        context.dataStore.edit { it[RUN_CODE] = value }
     }
 
     const val DEFAULT_SERVER = "http://192.168.1.10:4000"

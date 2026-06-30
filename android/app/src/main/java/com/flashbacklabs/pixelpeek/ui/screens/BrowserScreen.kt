@@ -7,6 +7,8 @@ import android.view.MotionEvent
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.BorderStroke
@@ -97,6 +99,7 @@ fun BrowserScreen(
     url: String,
     onSizeChanged: (Int, Int) -> Unit,
     onConsoleMessage: (level: String, message: String, source: String, line: Int) -> Unit = { _, _, _, _ -> },
+    onPageEvent: (kind: String, message: String, url: String) -> Unit = { _, _, _ -> },
     controlCommands: SharedFlow<ControlCommand>? = null,
     isFullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
@@ -108,6 +111,7 @@ fun BrowserScreen(
     val cornerRadius = if (isFullscreen) 0.dp else 14.dp
 
     val callback by rememberUpdatedState(onConsoleMessage)
+    val pageCallback by rememberUpdatedState(onPageEvent)
     val webViewRef = remember { arrayOfNulls<WebView>(1) }
 
     // Drive remote scroll / click commands from the host into the WebView.
@@ -198,11 +202,27 @@ fun BrowserScreen(
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView, u: String?, favicon: android.graphics.Bitmap?) {
                                 super.onPageStarted(view, u, favicon)
+                                pageCallback("navigation", "Page started", u ?: url)
                                 view.evaluateJavascript(CONSOLE_SHIM_JS, null)
                             }
                             override fun onPageFinished(view: WebView, u: String?) {
                                 super.onPageFinished(view, u)
+                                pageCallback("navigation", "Page finished", u ?: url)
                                 view.evaluateJavascript(CONSOLE_SHIM_JS, null)
+                            }
+                            override fun onReceivedError(
+                                view: WebView,
+                                request: WebResourceRequest,
+                                error: WebResourceError,
+                            ) {
+                                super.onReceivedError(view, request, error)
+                                if (request.isForMainFrame) {
+                                    pageCallback(
+                                        "error",
+                                        error.description?.toString() ?: "Page load failed",
+                                        request.url?.toString() ?: url,
+                                    )
+                                }
                             }
                         }
                         webChromeClient = object : WebChromeClient() {

@@ -1,6 +1,7 @@
 package com.flashbacklabs.pixelpeek.net
 
 import android.os.Build
+import io.socket.client.Ack
 import io.socket.client.IO
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
@@ -19,13 +20,29 @@ data class DeviceInfo(
     val label: String,
     val width: Int,
     val height: Int,
+    val runCode: String,
     val userAgent: String =
         "Pixelpeek/Android (${Build.MANUFACTURER} ${Build.MODEL}; Android ${Build.VERSION.RELEASE})",
 )
 
+data class ShareProfile(
+    val fps: Int = 8,
+    val maxFrameDim: Int = 720,
+    val jpegQuality: Int = 68,
+) {
+    fun normalized(): ShareProfile = copy(
+        fps = fps.coerceIn(2, 30),
+        maxFrameDim = maxFrameDim.coerceIn(320, 1440),
+        jpegQuality = jpegQuality.coerceIn(35, 90),
+    )
+}
+
 sealed class SocketEvent {
+    data class Joined(val runCode: String) : SocketEvent()
+    data class JoinFailed(val reason: String) : SocketEvent()
     data class LoadUrl(val url: String) : SocketEvent()
-    data class ShareRequest(val fromId: String) : SocketEvent()
+    data class ShareRequest(val fromId: String, val profile: ShareProfile) : SocketEvent()
+    data class ShareProfileChanged(val fromId: String, val profile: ShareProfile) : SocketEvent()
     data class ShareStop(val fromId: String) : SocketEvent()
     data class Control(val command: ControlCommand) : SocketEvent()
 }
@@ -53,8 +70,19 @@ class PixelpeekSocket {
     }
 
     private val shareRequestListener = Emitter.Listener { args ->
-        val fromId = (args.firstOrNull() as? JSONObject)?.optString("fromId", "") ?: return@Listener
-        if (fromId.isNotBlank()) _events.tryEmit(SocketEvent.ShareRequest(fromId))
+        val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+        val fromId = payload.optString("fromId", "")
+        if (fromId.isNotBlank()) {
+            _events.tryEmit(SocketEvent.ShareRequest(fromId, payload.optJSONObject("profile").toShareProfile()))
+        }
+    }
+
+    private val shareProfileListener = Emitter.Listener { args ->
+        val payload = args.firstOrNull() as? JSONObject ?: return@Listener
+        val fromId = payload.optString("fromId", "")
+        if (fromId.isNotBlank()) {
+            _events.tryEmit(SocketEvent.ShareProfileChanged(fromId, payload.optJSONObject("profile").toShareProfile()))
+        }
     }
 
     private val shareStopListener = Emitter.Listener { args ->
@@ -96,13 +124,17 @@ class PixelpeekSocket {
         val s = IO.socket(uri, opts)
         socket = s
         s.on(Socket.EVENT_CONNECT) {
-            _state.value = ConnState.Connected
             register()
         }
         s.on(Socket.EVENT_DISCONNECT) { _state.value = ConnState.Disconnected }
-        s.on(Socket.EVENT_CONNECT_ERROR) { _state.value = ConnState.Disconnected }
+        s.on(Socket.EVENT_CONNECT_ERROR) { args ->
+            val message = args.firstOrNull()?.toString()?.takeIf { it.isNotBlank() } ?: "connection failed"
+            _events.tryEmit(SocketEvent.JoinFailed(message))
+            _state.value = ConnState.Disconnected
+        }
         s.on("load-url", loadUrlListener)
         s.on("share-request", shareRequestListener)
+        s.on("share-profile", shareProfileListener)
         s.on("share-stop", shareStopListener)
         s.on("share-control", shareControlListener)
         s.connect()
@@ -114,9 +146,20 @@ class PixelpeekSocket {
             put("label", info.label)
             put("width", info.width)
             put("height", info.height)
+            put("runCode", info.runCode)
             put("userAgent", info.userAgent)
         }
-        socket?.emit("register-client", payload)
+        socket?.emit("register-client", payload, Ack { args ->
+            val ack = args.firstOrNull() as? JSONObject
+            if (ack?.optBoolean("ok", false) == true) {
+                _state.value = ConnState.Connected
+                val joinedRun = ack.optString("runCode", info.runCode).ifBlank { info.runCode }
+                _events.tryEmit(SocketEvent.Joined(joinedRun))
+            } else {
+                _state.value = ConnState.Disconnected
+                _events.tryEmit(SocketEvent.JoinFailed(ack?.optString("error", "join failed") ?: "join failed"))
+            }
+        })
     }
 
     fun reportViewport(width: Int, height: Int) {
@@ -142,6 +185,17 @@ class PixelpeekSocket {
             put("line", line)
         }
         socket?.emit("console-log", payload)
+    }
+
+    fun emitDeviceLog(kind: String, level: String, message: String, url: String = "") {
+        val payload = JSONObject().apply {
+            put("kind", kind)
+            put("level", level)
+            put("message", message)
+            put("url", url)
+            put("time", System.currentTimeMillis())
+        }
+        socket?.emit("device-log", payload)
     }
 
     fun emitShareFrame(targetId: String, base64Jpeg: String, width: Int, height: Int) {
@@ -170,11 +224,21 @@ class PixelpeekSocket {
     fun disconnect() {
         socket?.off("load-url", loadUrlListener)
         socket?.off("share-request", shareRequestListener)
+        socket?.off("share-profile", shareProfileListener)
         socket?.off("share-stop", shareStopListener)
         socket?.off("share-control", shareControlListener)
         socket?.disconnect()
         socket?.off()
         socket = null
         _state.value = ConnState.Disconnected
+    }
+
+    private fun JSONObject?.toShareProfile(): ShareProfile {
+        if (this == null) return ShareProfile()
+        return ShareProfile(
+            fps = optInt("fps", 8),
+            maxFrameDim = optInt("maxFrameDim", 720),
+            jpegQuality = optInt("jpegQuality", 68),
+        ).normalized()
     }
 }

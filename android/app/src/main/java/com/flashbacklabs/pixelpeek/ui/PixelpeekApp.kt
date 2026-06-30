@@ -16,9 +16,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,14 +50,16 @@ import com.flashbacklabs.pixelpeek.ui.theme.PixelpeekPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PixelpeekApp(viewModel: PixelpeekViewModel) {
+fun PixelpeekApp(
+    viewModel: PixelpeekViewModel,
+    onScanQr: () -> Unit,
+) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val conn by viewModel.connectionState.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var isFullscreen by rememberSaveable { mutableStateOf(false) }
     val showTopBar = !(isFullscreen && ui.currentUrl.isNotBlank())
 
-    // Report initial viewport once we know the size.
     val view = LocalView.current
     val density = LocalDensity.current
     LaunchedEffect(Unit) {
@@ -75,7 +88,6 @@ fun PixelpeekApp(viewModel: PixelpeekViewModel) {
                     .fillMaxSize()
                     .padding(padding),
             ) {
-                // Share banner: only when not in fullscreen (in fullscreen the URL bar shows a red dot instead)
                 if (ui.shareState != ShareState.Idle && !isFullscreen) {
                     Box(
                         modifier = Modifier
@@ -95,8 +107,12 @@ fun PixelpeekApp(viewModel: PixelpeekViewModel) {
                         HomeScreen(
                             conn = conn,
                             serverUrl = ui.serverUrl,
+                            runCode = ui.runCode,
+                            joinMessage = ui.joinMessage,
+                            onRunCodeChange = viewModel::setRunCode,
                             onConnect = viewModel::connect,
                             onDisconnect = viewModel::disconnect,
+                            onScanQr = onScanQr,
                             onSettings = { settingsOpen = true },
                         )
                     } else {
@@ -104,6 +120,7 @@ fun PixelpeekApp(viewModel: PixelpeekViewModel) {
                             url = ui.currentUrl,
                             onSizeChanged = viewModel::reportViewport,
                             onConsoleMessage = viewModel::emitConsoleMessage,
+                            onPageEvent = viewModel::emitPageEvent,
                             controlCommands = viewModel.controlCommands,
                             isFullscreen = isFullscreen,
                             onToggleFullscreen = { isFullscreen = !isFullscreen },
@@ -118,8 +135,10 @@ fun PixelpeekApp(viewModel: PixelpeekViewModel) {
     if (settingsOpen) {
         SettingsSheet(
             serverUrl = ui.serverUrl,
+            runCode = ui.runCode,
             label = ui.deviceLabel,
             onServerChange = viewModel::setServerUrl,
+            onRunCodeChange = viewModel::setRunCode,
             onLabelChange = viewModel::setDeviceLabel,
             onDismiss = { settingsOpen = false },
             onApply = {
@@ -133,7 +152,7 @@ fun PixelpeekApp(viewModel: PixelpeekViewModel) {
 @Composable
 private fun ShareBanner(state: ShareState, onStop: () -> Unit, modifier: Modifier = Modifier) {
     val (text, color) = when (state) {
-        ShareState.Requested -> "Waiting for screen share permission…" to PixelpeekPalette.Warn
+        ShareState.Requested -> "Waiting for screen share permission..." to PixelpeekPalette.Warn
         ShareState.Active -> "Sharing screen with host" to PixelpeekPalette.Success
         ShareState.Idle -> return
     }
